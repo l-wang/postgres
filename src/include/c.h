@@ -279,6 +279,13 @@
 #define dummyret	char
 #endif
 
+/*
+ * Generic function pointer.  This can be used in the rare cases where it's
+ * necessary to cast a function pointer to a seemingly incompatible function
+ * pointer type while avoiding gcc's -Wcast-function-type warnings.
+ */
+typedef void (*pg_funcptr_t) (void);
+
 /* Which __func__ symbol do we have, if any? */
 #ifdef HAVE_FUNCNAME__FUNC
 #define PG_FUNCNAME_MACRO	__func__
