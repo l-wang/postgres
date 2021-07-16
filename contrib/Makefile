@@ -10,6 +10,8 @@ SUBDIRS = \
 		auto_explain	\
 		basic_archive	\
 		basebackup_to_shell	\
+		blackhole_am	\
+		blackhole_cplusplus	\
 		bloom		\
 		btree_gin	\
 		btree_gist	\
