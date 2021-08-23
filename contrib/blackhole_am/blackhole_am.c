@@ -73,6 +73,7 @@ blackhole_scan_begin(Relation relation, Snapshot snapshot,
 					 ParallelTableScanDesc parallel_scan,
 					 uint32 flags)
 {
+	elog(NOTICE, "blackhole_scan_begin");
 	BlackholeScanDesc scan;
 
 	scan = (BlackholeScanDesc) palloc(sizeof(BlackholeScanDescData));
@@ -89,6 +90,7 @@ blackhole_scan_begin(Relation relation, Snapshot snapshot,
 static void
 blackhole_scan_end(TableScanDesc sscan)
 {
+	elog(NOTICE, "blackhole_scan_end");
 	BlackholeScanDesc scan = (BlackholeScanDesc) sscan;
 
 	pfree(scan);
@@ -98,6 +100,7 @@ static void
 blackhole_scan_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 					  bool allow_strat, bool allow_sync, bool allow_pagemode)
 {
+	elog(NOTICE, "blackhole_scan_rescan");
 	/* nothing to do */
 }
 
@@ -105,6 +108,7 @@ static bool
 blackhole_scan_getnextslot(TableScanDesc sscan, ScanDirection direction,
 						   TupleTableSlot *slot)
 {
+	elog(NOTICE, "blackhole_scan_getnextslot");
 	/* nothing to do */
 	return false;
 }
@@ -117,18 +121,21 @@ blackhole_scan_getnextslot(TableScanDesc sscan, ScanDirection direction,
 static IndexFetchTableData *
 blackhole_index_fetch_begin(Relation rel)
 {
+	elog(NOTICE, "blackhole_index_fetch_begin");
 	return NULL;
 }
 
 static void
 blackhole_index_fetch_reset(IndexFetchTableData *scan)
 {
+	elog(NOTICE, "blackhole_index_fetch_reset");
 	/* nothing to do here */
 }
 
 static void
 blackhole_index_fetch_end(IndexFetchTableData *scan)
 {
+	elog(NOTICE, "blackhole_index_fetch_end");
 	/* nothing to do here */
 }
 
@@ -139,6 +146,7 @@ blackhole_index_fetch_tuple(struct IndexFetchTableData *scan,
 							TupleTableSlot *slot,
 							bool *call_again, bool *all_dead)
 {
+	elog(NOTICE, "blackhole_index_fetch_tuple");
 	/* there is no data */
 	return 0;
 }
@@ -156,6 +164,7 @@ blackhole_fetch_row_version(Relation relation,
 							Snapshot snapshot,
 							TupleTableSlot *slot)
 {
+	elog(NOTICE, "blackhole_fetch_row_version");
 	/* nothing to do */
 	return false;
 }
@@ -164,12 +173,14 @@ static void
 blackhole_get_latest_tid(TableScanDesc sscan,
 						 ItemPointer tid)
 {
+	elog(NOTICE, "blackhole_get_latest_tid");
 	/* nothing to do */
 }
 
 static bool
 blackhole_tuple_tid_valid(TableScanDesc scan, ItemPointer tid)
 {
+	elog(NOTICE, "blackhole_tuple_tid_valid");
 	return false;
 }
 
@@ -177,6 +188,7 @@ static bool
 blackhole_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 								   Snapshot snapshot)
 {
+	elog(NOTICE, "blackhole_tuple_satisfies_snapshot");
 	return false;
 }
 
@@ -184,6 +196,7 @@ static TransactionId
 blackhole_index_delete_tuples(Relation rel,
 							  TM_IndexDeleteOp *delstate)
 {
+	elog(NOTICE, "blackhole_index_delete_tuples");
 	return InvalidTransactionId;
 }
 
@@ -196,6 +209,7 @@ static void
 blackhole_tuple_insert(Relation relation, TupleTableSlot *slot,
 					   CommandId cid, int options, BulkInsertState bistate)
 {
+	elog(NOTICE, "blackhole_tuple_insert");
 	/* nothing to do */
 }
 
@@ -205,6 +219,7 @@ blackhole_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 								   BulkInsertState bistate,
 								   uint32 specToken)
 {
+	elog(NOTICE, "blackhole_tuple_insert_speculative");
 	/* nothing to do */
 }
 
@@ -212,6 +227,7 @@ static void
 blackhole_tuple_complete_speculative(Relation relation, TupleTableSlot *slot,
 									 uint32 spekToken, bool succeeded)
 {
+	elog(NOTICE, "blackhole_tuple_complete_speculative");
 	/* nothing to do */
 }
 
@@ -220,6 +236,7 @@ blackhole_multi_insert(Relation relation, TupleTableSlot **slots,
 					   int ntuples, CommandId cid, int options,
 					   BulkInsertState bistate)
 {
+	elog(NOTICE, "blackhole_multi_insert");
 	/* nothing to do */
 }
 
@@ -228,6 +245,7 @@ blackhole_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 					   Snapshot snapshot, Snapshot crosscheck, bool wait,
 					   TM_FailureData *tmfd, bool changingPart)
 {
+	elog(NOTICE, "blackhole_tuple_delete");
 	/* nothing to do, so it is always OK */
 	return TM_Ok;
 }
@@ -239,6 +257,7 @@ blackhole_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot
 					   bool wait, TM_FailureData *tmfd,
 					   LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
 {
+	elog(NOTICE, "blackhole_tuple_update");
 	/* nothing to do, so it is always OK */
 	return TM_Ok;
 }
@@ -249,6 +268,7 @@ blackhole_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
 					 LockWaitPolicy wait_policy, uint8 flags,
 					 TM_FailureData *tmfd)
 {
+	elog(NOTICE, "blackhole_tuple_lock");
 	/* nothing to do, so it is always OK */
 	return TM_Ok;
 }
@@ -256,6 +276,7 @@ blackhole_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
 static void
 blackhole_finish_bulk_insert(Relation relation, int options)
 {
+	elog(NOTICE, "blackhole_finish_bulk_insert");
 	/* nothing to do */
 }
 
@@ -272,18 +293,21 @@ blackhole_relation_set_new_filelocator(Relation rel,
 									   TransactionId *freezeXid,
 									   MultiXactId *minmulti)
 {
+	elog(NOTICE, "blackhole_relation_set_new_filenode");
 	/* nothing to do */
 }
 
 static void
 blackhole_relation_nontransactional_truncate(Relation rel)
 {
+	elog(NOTICE, "blackhole_relation_nontransactional_truncate");
 	/* nothing to do */
 }
 
 static void
 blackhole_copy_data(Relation rel, const RelFileLocator *newrlocator)
 {
+	elog(NOTICE, "blackhole_copy_data");
 	/* there is no data */
 }
 
@@ -297,6 +321,7 @@ blackhole_copy_for_cluster(Relation OldTable, Relation NewTable,
 						   double *tups_vacuumed,
 						   double *tups_recently_dead)
 {
+	elog(NOTICE, "blackhole_copy_for_cluster");
 	/* no data, so nothing to do */
 }
 
@@ -304,12 +329,14 @@ static void
 blackhole_vacuum(Relation onerel, VacuumParams *params,
 				 BufferAccessStrategy bstrategy)
 {
+	elog(NOTICE, "blackhole_vacuum");
 	/* no data, so nothing to do */
 }
 
 static bool
 blackhole_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
 {
+	elog(NOTICE, "blackhole_scan_analyze_next_block");
 	/* no data, so no point to analyze next block */
 	return false;
 }
@@ -319,6 +346,7 @@ blackhole_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 								  double *liverows, double *deadrows,
 								  TupleTableSlot *slot)
 {
+	elog(NOTICE, "blackhole_scan_analyze_next_tuple");
 	/* no data, so no point to analyze next tuple */
 	return false;
 }
@@ -336,6 +364,7 @@ blackhole_index_build_range_scan(Relation tableRelation,
 								 void *callback_state,
 								 TableScanDesc scan)
 {
+	elog(NOTICE, "blackhole_index_build_range_scan");
 	/* no data, so no tuples */
 	return 0;
 }
@@ -347,6 +376,7 @@ blackhole_index_validate_scan(Relation tableRelation,
 							  Snapshot snapshot,
 							  ValidateIndexState *state)
 {
+	elog(NOTICE, "blackhole_index_validate_scan");
 	/* nothing to do */
 }
 
@@ -359,6 +389,7 @@ blackhole_index_validate_scan(Relation tableRelation,
 static uint64
 blackhole_relation_size(Relation rel, ForkNumber forkNumber)
 {
+	elog(NOTICE, "blackhole_relation_size");
 	/* there is nothing */
 	return 0;
 }
@@ -369,6 +400,7 @@ blackhole_relation_size(Relation rel, ForkNumber forkNumber)
 static bool
 blackhole_relation_needs_toast_table(Relation rel)
 {
+	elog(NOTICE, "blackhole_relation_needs_toast_table");
 	/* no data, so no toast table needed */
 	return false;
 }
@@ -384,6 +416,7 @@ blackhole_estimate_rel_size(Relation rel, int32 *attr_widths,
 							BlockNumber *pages, double *tuples,
 							double *allvisfrac)
 {
+	elog(NOTICE, "blackhole_estimate_rel_size");
 	/* no data available */
 	if (attr_widths)
 		*attr_widths = 0;
@@ -408,6 +441,7 @@ blackhole_scan_bitmap_next_tuple(TableScanDesc scan,
 								 uint64 *lossy_pages,
 								 uint64 *exact_pages)
 {
+	elog(NOTICE, "blackhole_scan_bitmap_next_tuple");
 	/* no data, so no point to scan next tuple */
 	return false;
 }
@@ -416,6 +450,7 @@ static bool
 blackhole_scan_sample_next_block(TableScanDesc scan,
 								 SampleScanState *scanstate)
 {
+	elog(NOTICE, "blackhole_scan_sample_next_block");
 	/* no data, so no point to scan next block for sampling */
 	return false;
 }
@@ -425,6 +460,7 @@ blackhole_scan_sample_next_tuple(TableScanDesc scan,
 								 SampleScanState *scanstate,
 								 TupleTableSlot *slot)
 {
+	elog(NOTICE, "blackhole_scan_sample_next_tuple");
 	/* no data, so no point to scan next tuple for sampling */
 	return false;
 }
