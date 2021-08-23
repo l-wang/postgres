@@ -1,0 +1,309 @@
+From 84c54647219ad7dc500943a6891b1574e0f913a1 Mon Sep 17 00:00:00 2001
+From: Jimmy Yih <jyih@vmware.com>
+Date: Sun, 22 Aug 2021 19:52:41 -0700
+Subject: [PATCH] Add helper notices
+
+These helper notices will assist the user by revealing the
+blackhole_am functions being used in a query while in a psql session.
+---
+ contrib/blackhole_am/blackhole_am.c | 37 +++++++++++++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+diff --git a/contrib/blackhole_am/blackhole_am.c b/contrib/blackhole_am/blackhole_am.c
+index b4cd971886..76a606d730 100644
+--- a/contrib/blackhole_am/blackhole_am.c
++++ b/contrib/blackhole_am/blackhole_am.c
+@@ -73,6 +73,7 @@ blackhole_scan_begin(Relation relation, Snapshot snapshot,
+ 					 ParallelTableScanDesc parallel_scan,
+ 					 uint32 flags)
+ {
++	elog(NOTICE, "blackhole_scan_begin");
+ 	BlackholeScanDesc	scan;
+ 
+ 	scan = (BlackholeScanDesc) palloc(sizeof(BlackholeScanDescData));
+@@ -89,6 +90,7 @@ blackhole_scan_begin(Relation relation, Snapshot snapshot,
+ static void
+ blackhole_scan_end(TableScanDesc sscan)
+ {
++	elog(NOTICE, "blackhole_scan_end");
+ 	BlackholeScanDesc scan = (BlackholeScanDesc) sscan;
+ 	pfree(scan);
+ }
+@@ -97,6 +99,7 @@ static void
+ blackhole_scan_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
+ 					  bool allow_strat, bool allow_sync, bool allow_pagemode)
+ {
++	elog(NOTICE, "blackhole_scan_rescan");
+ 	/* nothing to do */
+ }
+ 
+@@ -104,6 +107,7 @@ static bool
+ blackhole_scan_getnextslot(TableScanDesc sscan, ScanDirection direction,
+ 						   TupleTableSlot *slot)
+ {
++	elog(NOTICE, "blackhole_scan_getnextslot");
+ 	/* nothing to do */
+ 	return false;
+ }
+@@ -116,18 +120,21 @@ blackhole_scan_getnextslot(TableScanDesc sscan, ScanDirection direction,
+ static IndexFetchTableData *
+ blackhole_index_fetch_begin(Relation rel)
+ {
++	elog(NOTICE, "blackhole_index_fetch_begin");
+ 	return NULL;
+ }
+ 
+ static void
+ blackhole_index_fetch_reset(IndexFetchTableData *scan)
+ {
++	elog(NOTICE, "blackhole_index_fetch_reset");
+ 	/* nothing to do here */
+ }
+ 
+ static void
+ blackhole_index_fetch_end(IndexFetchTableData *scan)
+ {
++	elog(NOTICE, "blackhole_index_fetch_end");
+ 	/* nothing to do here */
+ }
+ 
+@@ -138,6 +145,7 @@ blackhole_index_fetch_tuple(struct IndexFetchTableData *scan,
+ 							TupleTableSlot *slot,
+ 							bool *call_again, bool *all_dead)
+ {
++	elog(NOTICE, "blackhole_index_fetch_tuple");
+ 	/* there is no data */
+ 	return 0;
+ }
+@@ -155,6 +163,7 @@ blackhole_fetch_row_version(Relation relation,
+ 							Snapshot snapshot,
+ 							TupleTableSlot *slot)
+ {
++	elog(NOTICE, "blackhole_fetch_row_version");
+ 	/* nothing to do */
+ 	return false;
+ }
+@@ -163,12 +172,14 @@ static void
+ blackhole_get_latest_tid(TableScanDesc sscan,
+ 						 ItemPointer tid)
+ {
++	elog(NOTICE, "blackhole_get_latest_tid");
+ 	/* nothing to do */
+ }
+ 
+ static bool
+ blackhole_tuple_tid_valid(TableScanDesc scan, ItemPointer tid)
+ {
++	elog(NOTICE, "blackhole_tuple_tid_valid");
+ 	return false;
+ }
+ 
+@@ -176,6 +187,7 @@ static bool
+ blackhole_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
+ 								  Snapshot snapshot)
+ {
++	elog(NOTICE, "blackhole_tuple_satisfies_snapshot");
+ 	return false;
+ }
+ 
+@@ -183,6 +195,7 @@ static TransactionId
+ blackhole_index_delete_tuples(Relation rel,
+ 							  TM_IndexDeleteOp *delstate)
+ {
++	elog(NOTICE, "blackhole_index_delete_tuples");
+ 	return InvalidTransactionId;
+ }
+ 
+@@ -195,6 +208,7 @@ static void
+ blackhole_tuple_insert(Relation relation, TupleTableSlot *slot,
+ 					   CommandId cid, int options, BulkInsertState bistate)
+ {
++	elog(NOTICE, "blackhole_tuple_insert");
+ 	/* nothing to do */
+ }
+ 
+@@ -204,6 +218,7 @@ blackhole_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
+ 								   BulkInsertState bistate,
+ 								   uint32 specToken)
+ {
++	elog(NOTICE, "blackhole_tuple_insert_speculative");
+ 	/* nothing to do */
+ }
+ 
+@@ -211,6 +226,7 @@ static void
+ blackhole_tuple_complete_speculative(Relation relation, TupleTableSlot *slot,
+ 									 uint32 spekToken, bool succeeded)
+ {
++	elog(NOTICE, "blackhole_tuple_complete_speculative");
+ 	/* nothing to do */
+ }
+ 
+@@ -219,6 +235,7 @@ blackhole_multi_insert(Relation relation, TupleTableSlot **slots,
+ 					   int ntuples, CommandId cid, int options,
+ 					   BulkInsertState bistate)
+ {
++	elog(NOTICE, "blackhole_multi_insert");
+ 	/* nothing to do */
+ }
+ 
+@@ -227,6 +244,7 @@ blackhole_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
+ 					   Snapshot snapshot, Snapshot crosscheck, bool wait,
+ 					   TM_FailureData *tmfd, bool changingPart)
+ {
++	elog(NOTICE, "blackhole_tuple_delete");
+ 	/* nothing to do, so it is always OK */
+ 	return TM_Ok;
+ }
+@@ -239,6 +257,7 @@ blackhole_tuple_update(Relation relation, ItemPointer otid,
+ 					   bool wait, TM_FailureData *tmfd,
+ 					   LockTupleMode *lockmode, bool *update_indexes)
+ {
++	elog(NOTICE, "blackhole_tuple_update");
+ 	/* nothing to do, so it is always OK */
+ 	return TM_Ok;
+ }
+@@ -249,6 +268,7 @@ blackhole_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
+ 					 LockWaitPolicy wait_policy, uint8 flags,
+ 					 TM_FailureData *tmfd)
+ {
++	elog(NOTICE, "blackhole_tuple_lock");
+ 	/* nothing to do, so it is always OK */
+ 	return TM_Ok;
+ }
+@@ -256,6 +276,7 @@ blackhole_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
+ static void
+ blackhole_finish_bulk_insert(Relation relation, int options)
+ {
++	elog(NOTICE, "blackhole_finish_bulk_insert");
+ 	/* nothing to do */
+ }
+ 
+@@ -272,18 +293,21 @@ blackhole_relation_set_new_filenode(Relation rel,
+ 									TransactionId *freezeXid,
+ 									MultiXactId *minmulti)
+ {
++	elog(NOTICE, "blackhole_relation_set_new_filenode");
+ 	/* nothing to do */
+ }
+ 
+ static void
+ blackhole_relation_nontransactional_truncate(Relation rel)
+ {
++	elog(NOTICE, "blackhole_relation_nontransactional_truncate");
+ 	/* nothing to do */
+ }
+ 
+ static void
+ blackhole_copy_data(Relation rel, const RelFileNode *newrnode)
+ {
++	elog(NOTICE, "blackhole_copy_data");
+ 	/* there is no data */
+ }
+ 
+@@ -297,6 +321,7 @@ blackhole_copy_for_cluster(Relation OldTable, Relation NewTable,
+ 						   double *tups_vacuumed,
+ 						   double *tups_recently_dead)
+ {
++	elog(NOTICE, "blackhole_copy_for_cluster");
+ 	/* no data, so nothing to do */
+ }
+ 
+@@ -304,6 +329,7 @@ static void
+ blackhole_vacuum(Relation onerel, VacuumParams *params,
+ 				 BufferAccessStrategy bstrategy)
+ {
++	elog(NOTICE, "blackhole_vacuum");
+ 	/* no data, so nothing to do */
+ }
+ 
+@@ -311,6 +337,7 @@ static bool
+ blackhole_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
+ 								  BufferAccessStrategy bstrategy)
+ {
++	elog(NOTICE, "blackhole_scan_analyze_next_block");
+ 	/* no data, so no point to analyze next block */
+ 	return false;
+ }
+@@ -320,6 +347,7 @@ blackhole_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
+ 								  double *liverows, double *deadrows,
+ 								  TupleTableSlot *slot)
+ {
++	elog(NOTICE, "blackhole_scan_analyze_next_tuple");
+ 	/* no data, so no point to analyze next tuple */
+ 	return false;
+ }
+@@ -337,6 +365,7 @@ blackhole_index_build_range_scan(Relation tableRelation,
+ 								 void *callback_state,
+ 								 TableScanDesc scan)
+ {
++	elog(NOTICE, "blackhole_index_build_range_scan");
+ 	/* no data, so no tuples */
+ 	return 0;
+ }
+@@ -348,6 +377,7 @@ blackhole_index_validate_scan(Relation tableRelation,
+ 							  Snapshot snapshot,
+ 							  ValidateIndexState *state)
+ {
++	elog(NOTICE, "blackhole_index_validate_scan");
+ 	/* nothing to do */
+ }
+ 
+@@ -360,6 +390,7 @@ blackhole_index_validate_scan(Relation tableRelation,
+ static uint64
+ blackhole_relation_size(Relation rel, ForkNumber forkNumber)
+ {
++	elog(NOTICE, "blackhole_relation_size");
+ 	/* there is nothing */
+ 	return 0;
+ }
+@@ -370,6 +401,7 @@ blackhole_relation_size(Relation rel, ForkNumber forkNumber)
+ static bool
+ blackhole_relation_needs_toast_table(Relation rel)
+ {
++	elog(NOTICE, "blackhole_relation_needs_toast_table");
+ 	/* no data, so no toast table needed */
+ 	return false;
+ }
+@@ -385,6 +417,7 @@ blackhole_estimate_rel_size(Relation rel, int32 *attr_widths,
+ 							BlockNumber *pages, double *tuples,
+ 							double *allvisfrac)
+ {
++	elog(NOTICE, "blackhole_estimate_rel_size");
+ 	/* no data available */
+ 	if (attr_widths)
+ 		*attr_widths = 0;
+@@ -406,6 +439,7 @@ static bool
+ blackhole_scan_bitmap_next_block(TableScanDesc scan,
+ 								 TBMIterateResult *tbmres)
+ {
++	elog(NOTICE, "blackhole_scan_bitmap_next_block");
+ 	/* no data, so no point to scan next block */
+ 	return false;
+ }
+@@ -415,6 +449,7 @@ blackhole_scan_bitmap_next_tuple(TableScanDesc scan,
+ 								 TBMIterateResult *tbmres,
+ 								 TupleTableSlot *slot)
+ {
++	elog(NOTICE, "blackhole_scan_bitmap_next_tuple");
+ 	/* no data, so no point to scan next tuple */
+ 	return false;
+ }
+@@ -423,6 +458,7 @@ static bool
+ blackhole_scan_sample_next_block(TableScanDesc scan,
+ 								 SampleScanState *scanstate)
+ {
++	elog(NOTICE, "blackhole_scan_sample_next_block");
+ 	/* no data, so no point to scan next block for sampling */
+ 	return false;
+ }
+@@ -432,6 +468,7 @@ blackhole_scan_sample_next_tuple(TableScanDesc scan,
+ 								 SampleScanState *scanstate,
+ 								 TupleTableSlot *slot)
+ {
++	elog(NOTICE, "blackhole_scan_sample_next_tuple");
+ 	/* no data, so no point to scan next tuple for sampling */
+ 	return false;
+ }
+-- 
+2.24.3 (Apple Git-128)
+
