@@ -223,13 +223,7 @@ process_source_file(const char *path, file_type_t type, size_t newsize,
 			break;
 
 		case FILE_TYPE_SYMLINK:
-			if (exists &&
-#ifndef WIN32
-				!S_ISLNK(statbuf.st_mode)
-#else
-				!pgwin32_is_junction(localpath)
-#endif
-				)
+			if (exists && !S_ISLNK(statbuf.st_mode))
 			{
 				/*
 				 * It's a symbolic link in source, but not in target.
