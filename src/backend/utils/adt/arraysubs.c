@@ -53,7 +53,7 @@ typedef struct ArraySubWorkspace
  */
 static void
 array_subscript_transform(SubscriptingRef *sbsref,
-						  List *indirection,
+						  List **indirection,
 						  ParseState *pstate,
 						  bool isSlice,
 						  bool isAssignment)
@@ -70,7 +70,7 @@ array_subscript_transform(SubscriptingRef *sbsref,
 	 * indirection items to slices by treating the single subscript as the
 	 * upper bound and supplying an assumed lower bound of 1.
 	 */
-	foreach(idx, indirection)
+	foreach(idx, *indirection)
 	{
 		A_Indices  *ai = lfirst_node(A_Indices, idx);
 		Node	   *subexpr;
@@ -151,6 +151,7 @@ array_subscript_transform(SubscriptingRef *sbsref,
 						list_length(upperIndexpr), MAXDIM)));
 	/* We need not check lowerIndexpr separately */
 
+		*indirection = NIL;
 	/*
 	 * Determine the result type of the subscripting operation.  It's the same
 	 * as the array type if we're slicing, else it's the element type.  In
