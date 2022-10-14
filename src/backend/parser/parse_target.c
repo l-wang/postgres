@@ -936,8 +936,11 @@ transformAssignmentSubscripts(ParseState *pstate,
 										  basenode,
 										  containerType,
 										  containerTypMod,
-										  subscripts,
+										  &subscripts,
 										  true);
+
+	if (subscripts)
+		elog(ERROR, "subscripting assignment is not supported");
 
 	typeNeeded = sbsref->refrestype;
 	typmodNeeded = sbsref->reftypmod;
