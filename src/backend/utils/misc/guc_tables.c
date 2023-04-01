@@ -2096,6 +2096,17 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"compat_field_notation", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
+			gettext_noop("Give a preference to function field notation over generic type subscripting."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&compat_field_notation,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL

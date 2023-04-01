@@ -42,6 +42,7 @@
 
 /* GUC parameters */
 bool		Transform_null_equals = false;
+bool		compat_field_notation = false;
 
 
 static Node *transformExprRecurse(ParseState *pstate, Node *expr);

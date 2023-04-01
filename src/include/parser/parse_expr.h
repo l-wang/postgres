@@ -17,6 +17,7 @@
 
 /* GUC parameters */
 extern PGDLLIMPORT bool Transform_null_equals;
+extern PGDLLIMPORT bool compat_field_notation;
 
 extern Node *transformExpr(ParseState *pstate, Node *expr, ParseExprKind exprKind);
 
