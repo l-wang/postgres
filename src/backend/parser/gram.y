@@ -18916,6 +18916,7 @@ check_func_name(List *names, core_yyscan_t yyscanner)
 static List *
 check_indirection(List *indirection, core_yyscan_t yyscanner)
 {
+#if 0
 	ListCell   *l;
 
 	foreach(l, indirection)
@@ -18926,6 +18927,7 @@ check_indirection(List *indirection, core_yyscan_t yyscanner)
 				parser_yyerror("improper use of \"*\"");
 		}
 	}
+#endif
 	return indirection;
 }
 
