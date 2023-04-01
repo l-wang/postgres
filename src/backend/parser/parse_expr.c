@@ -461,19 +461,40 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		}
 		else
 		{
-			Node	   *newresult;
-
 			Assert(IsA(n, String));
+			subscripts = lappend(subscripts, n);
+		}
+	}
 
-			/* process subscripts before this field selection */
-			while (subscripts)
-				result = (Node *) transformContainerSubscripts(pstate,
-															   result,
-															   exprType(result),
-															   exprTypmod(result),
-															   &subscripts,
-															   false);
+	/* process trailing subscripts, if any */
+	while (subscripts)
+	{
+		Node	   *newresult = (Node *)
+			transformContainerSubscripts(pstate,
+										 result,
+										 exprType(result),
+										 exprTypmod(result),
+										 &subscripts,
+										 false,
+										 true);
 
+		if (!newresult)
+		{
+			/* generic subscripting failed */
+			Node	   *n;
+
+			Assert(subscripts);
+
+			n = linitial(subscripts);
+
+			if (!IsA(n, String))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("cannot subscript type %s because it does not support subscripting",
+								format_type_be(exprType(result))),
+						 parser_errposition(pstate, exprLocation(result))));
+
+			/* try to find function for field selection */
 			newresult = ParseFuncOrColumn(pstate,
 										  list_make1(n),
 										  list_make1(result),
@@ -481,19 +502,16 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 										  NULL,
 										  false,
 										  location);
-			if (newresult == NULL)
+
+			if (!newresult)
 				unknown_attribute(pstate, result, strVal(n), location);
-			result = newresult;
+
+			/* consume field select */
+			subscripts = list_delete_first(subscripts);
 		}
+
+		result = newresult;
 	}
-	/* process trailing subscripts, if any */
-	while (subscripts)
-		result = (Node *) transformContainerSubscripts(pstate,
-													   result,
-													   exprType(result),
-													   exprTypmod(result),
-													   &subscripts,
-													   false);
 
 	return result;
 }
