@@ -5891,19 +5891,39 @@ select '12345.0000000000000000000000000000000000000000000005'::jsonb::int8;
 CREATE TABLE test_jsonb_dot_notation AS
 SELECT '{"a": [1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], "b": [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]}'::jsonb jb;
 SELECT (jb).* FROM test_jsonb_dot_notation;
-ERROR:  type jsonb is not composite
+                                                              jb                                                              
+------------------------------------------------------------------------------------------------------------------------------
+ [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
+(1 row)
+
 SELECT (jb).* FROM test_jsonb_dot_notation t;
-ERROR:  type jsonb is not composite
+                                                              jb                                                              
+------------------------------------------------------------------------------------------------------------------------------
+ [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
+(1 row)
+
 SELECT (t.jb).* FROM test_jsonb_dot_notation t;
-ERROR:  type jsonb is not composite
+                                                              jb                                                              
+------------------------------------------------------------------------------------------------------------------------------
+ [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
+(1 row)
+
 SELECT (jb).* FROM test_jsonb_dot_notation;
-ERROR:  type jsonb is not composite
+                                                              jb                                                              
+------------------------------------------------------------------------------------------------------------------------------
+ [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
+(1 row)
+
 SELECT (t.jb).* FROM test_jsonb_dot_notation;
 ERROR:  missing FROM-clause entry for table "t"
 LINE 1: SELECT (t.jb).* FROM test_jsonb_dot_notation;
                 ^
 SELECT (t.jb).* FROM test_jsonb_dot_notation t;
-ERROR:  type jsonb is not composite
+                                                              jb                                                              
+------------------------------------------------------------------------------------------------------------------------------
+ [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
+(1 row)
+
 SELECT (jb).a FROM test_jsonb_dot_notation;
                                     a                                    
 -------------------------------------------------------------------------
@@ -5935,75 +5955,120 @@ SELECT (jb).a.b FROM test_jsonb_dot_notation;
 (1 row)
 
 SELECT (jb).a.* FROM test_jsonb_dot_notation;
-ERROR:  type jsonb is not composite
+                     a                     
+-------------------------------------------
+ ["c", "d", "f", {"y": "yyy", "z": "zzz"}]
+(1 row)
+
 SELECT (jb).a.*.b FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).a.*.b FROM test_jsonb_dot_notation;
-                          ^
+ b 
+---
+ 
+(1 row)
+
 SELECT (jb).a.*.x FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).a.*.x FROM test_jsonb_dot_notation;
-                          ^
+ x 
+---
+ 
+(1 row)
+
 SELECT (jb).a.*.y FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).a.*.y FROM test_jsonb_dot_notation;
-                          ^
+   y   
+-------
+ "yyy"
+(1 row)
+
 SELECT (jb).a.*.* FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).a.*.* FROM test_jsonb_dot_notation;
-                          ^
+       a        
+----------------
+ ["yyy", "zzz"]
+(1 row)
+
 SELECT (jb).*.x FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.x FROM test_jsonb_dot_notation;
-                        ^
+                          x                           
+------------------------------------------------------
+ [{"y": "yyy", "z": "zzz"}, {"y": "YYY", "z": "ZZZ"}]
+(1 row)
+
 SELECT (jb).*.x FROM test_jsonb_dot_notation t;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.x FROM test_jsonb_dot_notation t;
-                        ^
+                          x                           
+------------------------------------------------------
+ [{"y": "yyy", "z": "zzz"}, {"y": "YYY", "z": "ZZZ"}]
+(1 row)
+
 SELECT ((jb).*).x FROM test_jsonb_dot_notation t;
-ERROR:  row expansion via "*" is not supported here
-LINE 1: SELECT ((jb).*).x FROM test_jsonb_dot_notation t;
-                 ^
+ x 
+---
+ 
+(1 row)
+
 SELECT ((jb).*).x FROM test_jsonb_dot_notation t;
-ERROR:  row expansion via "*" is not supported here
-LINE 1: SELECT ((jb).*).x FROM test_jsonb_dot_notation t;
-                 ^
+ x 
+---
+ 
+(1 row)
+
 SELECT ((jb).*)[:].x FROM test_jsonb_dot_notation t;
-ERROR:  row expansion via "*" is not supported here
-LINE 1: SELECT ((jb).*)[:].x FROM test_jsonb_dot_notation t;
-                 ^
+                          x                           
+------------------------------------------------------
+ [{"y": "yyy", "z": "zzz"}, {"y": "YYY", "z": "ZZZ"}]
+(1 row)
+
 SELECT (jb).*.x FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.x FROM test_jsonb_dot_notation;
-                        ^
+                          x                           
+------------------------------------------------------
+ [{"y": "yyy", "z": "zzz"}, {"y": "YYY", "z": "ZZZ"}]
+(1 row)
+
 SELECT (jb).*.x.* FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.x.* FROM test_jsonb_dot_notation;
-                          ^
+              x               
+------------------------------
+ ["yyy", "zzz", "YYY", "ZZZ"]
+(1 row)
+
 SELECT (jb).*.x.y FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.x.y FROM test_jsonb_dot_notation;
-                          ^
+       y        
+----------------
+ ["yyy", "YYY"]
+(1 row)
+
 SELECT (jb).*.x.z FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.x.z FROM test_jsonb_dot_notation;
-                          ^
+       z        
+----------------
+ ["zzz", "ZZZ"]
+(1 row)
+
 SELECT (jb).*.*.y FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.*.y FROM test_jsonb_dot_notation;
-                          ^
+       y        
+----------------
+ ["yyy", "YYY"]
+(1 row)
+
 SELECT (jb).*.*.* FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.*.* FROM test_jsonb_dot_notation;
-                          ^
+              jb              
+------------------------------
+ ["yyy", "zzz", "YYY", "ZZZ"]
+(1 row)
+
 SELECT (jb).*.*.*.* FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: SELECT (jb).*.*.*.* FROM test_jsonb_dot_notation;
-                            ^
+ jb 
+----
+ 
+(1 row)
+
 SELECT (jb).a.b.c.* FROM test_jsonb_dot_notation;
-ERROR:  type jsonb is not composite
+ c 
+---
+ 
+(1 row)
+
 EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).* FROM test_jsonb_dot_notation;
-ERROR:  type jsonb is not composite
+                 QUERY PLAN                 
+--------------------------------------------
+ Seq Scan on public.test_jsonb_dot_notation
+   Output: jb.*
+(2 rows)
+
 EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).a FROM test_jsonb_dot_notation;
                  QUERY PLAN                 
 --------------------------------------------
@@ -6019,10 +6084,16 @@ EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).a[1] FROM test_jsonb_dot_notation;
 (2 rows)
 
 EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).a.*['b'] FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).a.*['b'] FROM test_...
-                                                          ^
+                 QUERY PLAN                 
+--------------------------------------------
+ Seq Scan on public.test_jsonb_dot_notation
+   Output: jb.a.*['b'::text]
+(2 rows)
+
 EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).a.*[1:2]['b'].b FROM test_jsonb_dot_notation;
-ERROR:  improper use of "*" at or near "FROM"
-LINE 1: ... (VERBOSE, COSTS OFF) SELECT (jb).a.*[1:2]['b'].b FROM test_...
-                                                             ^
+                 QUERY PLAN                 
+--------------------------------------------
+ Seq Scan on public.test_jsonb_dot_notation
+   Output: jb.a.*[1:2][:'b'::text].b
+(2 rows)
+
