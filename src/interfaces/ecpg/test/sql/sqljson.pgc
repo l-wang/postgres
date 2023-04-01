@@ -115,6 +115,33 @@ EXEC SQL END DECLARE SECTION;
 	  for (int i = 0; i < sizeof(is_json); i++)
 		  printf("Found is_json[%d]: %s\n", i, is_json[i] ? "true" : "false");
 
+	EXEC SQL SELECT JSON(('{"a": {"b": 1, "c": 2}}'::jsonb)."a") INTO :json;
+	printf("Found json=%s\n", json);
+
+	EXEC SQL SELECT JSON('{"a": {"b": 1, "c": 2}}'::jsonb."a") INTO :json;
+	// error
+
+	EXEC SQL SELECT JSON(('{"a": {"b": 1, "c": 2}}'::jsonb).a) INTO :json;
+	printf("Found json=%s\n", json);
+
+	EXEC SQL SELECT JSON(('{"a": {"b": 1, "c": 2}}'::jsonb).a.b) INTO :json;
+	printf("Found json=%s\n", json);
+
+	EXEC SQL SELECT JSON(COALESCE(JSON(('{"a": {"b": 1, "c": 2}}'::jsonb).c), 'null')) INTO :json;
+	printf("Found json=%s\n", json);
+
+	EXEC SQL SELECT JSON(('{"a": {"b": 1, "c": 2}, "b": [{"x": 1}, {"x": [12, {"y":1}]}]}'::jsonb).b[0]) INTO :json;
+	printf("Found json=%s\n", json);
+
+	EXEC SQL SELECT JSON(('{"a": {"b": 1, "c": 2}, "b": [{"x": 1}, {"x": [12, {"y":1}]}]}'::jsonb).b[1].x[0:]) INTO :json;
+	printf("Found json=%s\n", json);
+
+	EXEC SQL SELECT JSON(('{"a": {"b": 1, "c": 2}, "b": [{"x": 1}, {"x": [12, {"y":1}]}]}'::jsonb).b[:]) INTO :json;
+	printf("Found json=%s\n", json);
+
+	EXEC SQL SELECT JSON(('{"a": {"b": 1, "c": 2}, "b": [{"x": 1}, {"x": [12, {"y":1}]}]}'::jsonb).b.x) INTO :json;
+	printf("Found json=%s\n", json);
+
   EXEC SQL DISCONNECT;
 
   return 0;
