@@ -937,7 +937,8 @@ transformAssignmentSubscripts(ParseState *pstate,
 										  containerType,
 										  containerTypMod,
 										  &subscripts,
-										  true);
+										  true,
+										  false);
 
 	if (subscripts)
 		elog(ERROR, "subscripting assignment is not supported");

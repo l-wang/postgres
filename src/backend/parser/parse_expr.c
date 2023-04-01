@@ -462,19 +462,78 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		}
 		else
 		{
-			Node	   *newresult;
-
 			Assert(IsA(n, String));
 
-			/* process subscripts before this field selection */
-			while (subscripts)
-				result = (Node *) transformContainerSubscripts(pstate,
-															   result,
-															   exprType(result),
-															   exprTypmod(result),
-															   &subscripts,
-															   false);
+			if (compat_field_notation)
+			{
+				/* try to process subscripts before this field selection */
+				List	   *newsubscripts = list_copy(subscripts);
+				Node	   *newresult = result;
 
+				while (newsubscripts)
+					newresult = (Node *)
+						transformContainerSubscripts(pstate,
+													 newresult,
+													 exprType(newresult),
+													 exprTypmod(newresult),
+													 &newsubscripts,
+													 false,
+													 false);
+
+				newresult = ParseFuncOrColumn(pstate,
+											  list_make1(n),
+											  list_make1(newresult),
+											  last_srf,
+											  NULL,
+											  false,
+											  location);
+				if (newresult != NULL)
+				{
+					result = newresult;
+					subscripts = newsubscripts;
+					continue;
+				}
+
+				/*
+				 * Failed to consume field select, add it to the list
+				 * for trying generic subscripting later.
+				 */
+			}
+
+			subscripts = lappend(subscripts, n);
+		}
+	}
+
+	/* process trailing subscripts, if any */
+	while (subscripts)
+	{
+		Node	   *newresult = (Node *)
+			transformContainerSubscripts(pstate,
+										 result,
+										 exprType(result),
+										 exprTypmod(result),
+										 &subscripts,
+										 false,
+										 !compat_field_notation);
+
+		if (!newresult)
+		{
+			/* generic subscripting failed */
+			Node	   *n;
+
+			Assert(!compat_field_notation);
+			Assert(subscripts);
+
+			n = linitial(subscripts);
+
+			if (!IsA(n, String))
+				ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("cannot subscript type %s because it does not support subscripting",
+						format_type_be(exprType(result))),
+				 parser_errposition(pstate, exprLocation(result))));
+
+			/* try to find function for field selection */
 			newresult = ParseFuncOrColumn(pstate,
 										  list_make1(n),
 										  list_make1(result),
@@ -482,19 +541,16 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 										  NULL,
 										  false,
 										  location);
-			if (newresult == NULL)
+
+			if (!newresult)
 				unknown_attribute(pstate, result, strVal(n), location);
-			result = newresult;
+
+			/* consume field select */
+			subscripts = list_delete_first(subscripts);
 		}
+
+		result = newresult;
 	}
-	/* process trailing subscripts, if any */
-	while (subscripts)
-		result = (Node *) transformContainerSubscripts(pstate,
-													   result,
-													   exprType(result),
-													   exprTypmod(result),
-													   &subscripts,
-													   false);
 
 	return result;
 }
