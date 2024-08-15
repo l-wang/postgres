@@ -33,6 +33,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "parser/parse_oper.h"
 
 
 /* Possible error codes from LookupFuncNameInternal */
@@ -226,17 +227,43 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 						   !func_variadic && argnames == NIL &&
 						   list_length(funcname) == 1 &&
 						   (actual_arg_types[0] == RECORDOID ||
-							ISCOMPLEX(actual_arg_types[0])));
+							ISCOMPLEX(actual_arg_types[0]) ||
+							ISJSON(actual_arg_types[0])));
 
 	/*
 	 * If it's column syntax, check for column projection case first.
 	 */
 	if (could_be_projection && is_column)
 	{
-		retval = ParseComplexProjection(pstate,
-										strVal(linitial(funcname)),
-										first_arg,
-										location);
+		if (ISJSON(actual_arg_types[0])) {
+			Node	   *lexpr = first_arg;
+			Node	   *rexpr = linitial(funcname);
+			if (!IsA(rexpr, String)) {
+				ereport(ERROR,
+						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+								errmsg("Not Supported funcname for JSON simplified accessor"),
+								parser_errposition(pstate, location)));
+			}
+			rexpr = (Node *) makeConst(
+					TEXTOID,
+					-1,
+					InvalidOid,
+					-1,
+					CStringGetTextDatum(((String *)rexpr)->sval),
+					false,
+					false);
+
+			retval = (Node *) make_op(pstate,
+									  list_make1(makeString("->")),
+									  lexpr,
+									  rexpr,
+									  last_srf,
+									  location);
+		} else
+			retval = ParseComplexProjection(pstate,
+											strVal(linitial(funcname)),
+											first_arg,
+											location);
 		if (retval)
 			return retval;
 

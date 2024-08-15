@@ -867,3 +867,30 @@ select ts_headline('english', '{"a": "aaa bbb", "b": {"c": "ccc ddd fff", "c1": 
 select ts_headline('null'::json, tsquery('aaa & bbb'));
 select ts_headline('{}'::json, tsquery('aaa & bbb'));
 select ts_headline('[]'::json, tsquery('aaa & bbb'));
+
+-- simple dot notation
+drop table if exists test_json_dot;
+create table test_json_dot(id int, test_json json);
+insert into test_json_dot select 1, '{"a": 1, "b": 42}'::json;
+insert into test_json_dot select 1, '{"a": 2, "b": {"c": 42}}'::json;
+insert into test_json_dot select 1, '{"a": 3, "b": {"c": "42"}, "d":[11, 12]}'::json;
+
+-- member object access
+select (test_json_dot.test_json).b from test_json_dot;
+select (test_json_dot.test_json).b.c from test_json_dot;
+select (test_json_dot.test_json).d from test_json_dot;
+select (test_json_dot.test_json)."d" from test_json_dot;
+select (test_json_dot.test_json).'d' from test_json_dot;
+
+-- array element access
+select (test_json_dot.test_json).d->0 from test_json_dot;
+select (test_json_dot.test_json).d[0] from test_json_dot;
+
+-- wildcard member access
+select (test_json_dot.test_json).b.* from test_json_dot;
+
+-- wildcard array access
+select (test_json_dot.test_json).d[*] from test_json_dot;
+
+-- item method
+select (test_json_dot.test_json).d.size() from test_json_dot;
