@@ -33,6 +33,8 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "parser/parse_oper.h"
+#include "catalog/pg_operator_d.h"
 
 
 /* Possible error codes from LookupFuncNameInternal */
@@ -47,6 +49,8 @@ static void unify_hypothetical_args(ParseState *pstate,
 									Oid *actual_arg_types, Oid *declared_arg_types);
 static Oid	FuncNameAsType(List *funcname);
 static Node *ParseComplexProjection(ParseState *pstate, const char *funcname,
+									Node *first_arg, int location);
+static Node *ParseJsonSimplifiedAccessorProjection(ParseState *pstate, const char *funcname,
 									Node *first_arg, int location);
 static Oid	LookupFuncNameInternal(ObjectType objtype, List *funcname,
 								   int nargs, const Oid *argtypes,
@@ -226,17 +230,24 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 						   !func_variadic && argnames == NIL &&
 						   list_length(funcname) == 1 &&
 						   (actual_arg_types[0] == RECORDOID ||
-							ISCOMPLEX(actual_arg_types[0])));
+							ISCOMPLEX(actual_arg_types[0]) ||
+							ISJSON(actual_arg_types[0])));
 
 	/*
 	 * If it's column syntax, check for column projection case first.
 	 */
 	if (could_be_projection && is_column)
 	{
-		retval = ParseComplexProjection(pstate,
-										strVal(linitial(funcname)),
-										first_arg,
-										location);
+		if (ISJSON(actual_arg_types[0]))
+			retval = ParseJsonSimplifiedAccessorProjection(pstate,
+											strVal(linitial(funcname)),
+											first_arg,
+											location);
+		else
+			retval = ParseComplexProjection(pstate,
+											strVal(linitial(funcname)),
+											first_arg,
+											location);
 		if (retval)
 			return retval;
 
@@ -1900,6 +1911,42 @@ FuncNameAsType(List *funcname)
 
 	ReleaseSysCache(typtup);
 	return result;
+}
+
+/*
+ * ParseJsonSimplifiedAccessorProjection -
+ *	  handles function calls with a single argument that is of json type.
+ *	  If the function call is actually a column projection, return a suitably
+ *	  transformed expression tree.  If not, return NULL.
+ */
+static Node *
+ParseJsonSimplifiedAccessorProjection(ParseState *pstate, const char *funcname,
+									  Node *first_arg, int location)
+{
+	OpExpr	*result;
+	Node	*rexpr;
+	rexpr = (Node *) makeConst(
+			TEXTOID,
+			-1,
+			InvalidOid,
+			-1,
+			CStringGetTextDatum(funcname),
+			false,
+			false);
+
+	result = makeNode(OpExpr);
+	if (exprType(first_arg) == JSONOID) {
+		result->opno = OID_JSON_OBJECT_FIELD_OP;
+		result->opresulttype = JSONOID;
+	} else {
+		Assert(exprType(first_arg) == JSONBOID);
+		result->opno = OID_JSONB_OBJECT_FIELD_OP;
+		result->opresulttype = JSONBOID;
+	}
+	result->opfuncid = get_opcode(result->opno);
+	result->args = list_make2(first_arg, rexpr);
+	result->location = location;
+	return (Node *) result;
 }
 
 /*

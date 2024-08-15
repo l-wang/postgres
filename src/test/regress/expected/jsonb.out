@@ -5715,3 +5715,58 @@ select '12345.0000000000000000000000000000000000000000000005'::jsonb::int8;
  12345
 (1 row)
 
+-- simple dot notation
+drop table if exists test_jsonb_dot;
+NOTICE:  table "test_jsonb_dot" does not exist, skipping
+create table test_jsonb_dot(id int, test_jsonb jsonb);
+insert into test_jsonb_dot select 1, '{"a": 1, "b": 42}'::json;
+insert into test_jsonb_dot select 1, '{"a": 2, "b": {"c": 42}}'::json;
+insert into test_jsonb_dot select 1, '{"a": 3, "b": {"c": "42"}, "d":[11, 12]}'::json;
+-- member object access
+select (test_jsonb_dot.test_jsonb).b from test_jsonb_dot;
+      b      
+-------------
+ 42
+ {"c": 42}
+ {"c": "42"}
+(3 rows)
+
+select (test_jsonb_dot.test_jsonb).b.c from test_jsonb_dot;
+  c   
+------
+ 
+ 42
+ "42"
+(3 rows)
+
+select (test_json_dot.test_json).d from test_json_dot;
+                 d                  
+------------------------------------
+ 
+ 
+ [11, 12]
+ [{"x": [11, 12]}, {"y": [21, 22]}]
+(4 rows)
+
+select (test_json_dot.test_json)."d" from test_json_dot;
+                 d                  
+------------------------------------
+ 
+ 
+ [11, 12]
+ [{"x": [11, 12]}, {"y": [21, 22]}]
+(4 rows)
+
+select (test_json_dot.test_json).'d' from test_json_dot;
+ERROR:  syntax error at or near "'d'"
+LINE 1: select (test_json_dot.test_json).'d' from test_json_dot;
+                                         ^
+-- array element access
+select (test_jsonb_dot.test_jsonb).d[0] from test_jsonb_dot;
+ d  
+----
+ 
+ 
+ 11
+(3 rows)
+
