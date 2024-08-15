@@ -106,6 +106,8 @@ static Expr *make_distinct_op(ParseState *pstate, List *opname,
 							  Node *ltree, Node *rtree, int location);
 static Node *make_nulltest_from_distinct(ParseState *pstate,
 										 A_Expr *distincta, Node *arg);
+static JsonReturning *transformJsonOutput(ParseState *pstate, const JsonOutput *output,
+										  bool allow_format);
 
 
 /*
@@ -440,6 +442,8 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 	List	   *subscripts = NIL;
 	int			location = exprLocation(result);
 	ListCell   *i;
+	bool		json_accessor = false;
+	StringInfoData jsonpath;
 
 	/*
 	 * We have to split any field-selection operations apart from
@@ -451,7 +455,39 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		Node	   *n = lfirst(i);
 
 		if (IsA(n, A_Indices))
+		{
+			if (!json_accessor && (exprType(result) == JSONOID))
+			{
+				json_accessor = true;
+				initStringInfo(&jsonpath);
+				appendStringInfoString(&jsonpath, " lax $");
+			}
+			if (json_accessor)
+			{
+				Node	   *subExpr;
+
+				if (((A_Indices *) n)->is_slice || ((A_Indices *) n)->lidx)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("json simplified accessor does not support slices"),
+							 parser_errposition(pstate, location)));
+
+				Assert(((A_Indices *) n)->uidx);
+				subExpr = transformExpr(pstate, ((A_Indices *) n)->uidx, pstate->p_expr_kind);
+				if (exprType(subExpr) != INT4OID)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("json simplified accessor does not support subscripting of non-int4 type"),
+							 parser_errposition(pstate, location)));
+
+				appendStringInfoString(&jsonpath, "[");
+				appendStringInfo(&jsonpath, "%d", DatumGetInt32(((Const *) subExpr)->constvalue));
+				appendStringInfoString(&jsonpath, "]");
+				continue;
+			}
+
 			subscripts = lappend(subscripts, n);
+		}
 		else if (IsA(n, A_Star))
 		{
 			ereport(ERROR,
@@ -462,6 +498,14 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		else
 		{
 			Node	   *newresult;
+
+			if (!json_accessor && ((exprType(result) == JSONOID) ||
+								   exprType(result) == JSONBOID))
+			{
+				json_accessor = true;
+				initStringInfo(&jsonpath);
+				appendStringInfoString(&jsonpath, " lax $");
+			}
 
 			Assert(IsA(n, String));
 
@@ -475,6 +519,13 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 															   false);
 			subscripts = NIL;
 
+			if (json_accessor)
+			{
+				appendStringInfoString(&jsonpath, ".");
+				appendStringInfoString(&jsonpath, strVal(n));
+				continue;
+			}
+
 			newresult = ParseFuncOrColumn(pstate,
 										  list_make1(n),
 										  list_make1(result),
@@ -482,11 +533,56 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 										  NULL,
 										  false,
 										  location);
+
 			if (newresult == NULL)
 				unknown_attribute(pstate, result, strVal(n), location);
 			result = newresult;
 		}
 	}
+
+	if (json_accessor)
+	{
+		JsonExpr   *jsexpr;
+		Node	   *path_spec;
+
+		jsexpr = makeNode(JsonExpr);
+		jsexpr->location = location;
+		jsexpr->op = JSON_QUERY_OP;
+		jsexpr->column_name = NULL;
+
+		jsexpr->formatted_expr = result;
+		path_spec = makeStringConst(jsonpath.data, -1);
+		path_spec = transformExprRecurse(pstate, path_spec);
+		path_spec = coerce_to_target_type(pstate, path_spec, exprType(path_spec),
+										  JSONPATHOID, -1,
+										  COERCION_EXPLICIT, COERCE_IMPLICIT_CAST,
+										  exprLocation(path_spec));
+		if (path_spec == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("JSON path expression must be of type %s, not of type %s",
+							"jsonpath", format_type_be(exprType(path_spec))),
+					 parser_errposition(pstate, exprLocation(path_spec))));
+		jsexpr->path_spec = path_spec;
+
+		jsexpr->returning = transformJsonOutput(pstate, NULL, false);
+		jsexpr->format = makeJsonFormat(JS_FORMAT_DEFAULT,
+										JS_ENC_DEFAULT,
+										-1);
+		jsexpr->returning->typid = JSONBOID;
+		jsexpr->returning->typmod = -1;
+		jsexpr->omit_quotes = false;
+		jsexpr->wrapper = JSW_CONDITIONAL;
+		jsexpr->on_empty = transformJsonBehavior(pstate, makeJsonBehavior(JSON_BEHAVIOR_NULL, NULL, location),
+												 JSON_BEHAVIOR_NULL,
+												 jsexpr->returning);
+		jsexpr->on_error = transformJsonBehavior(pstate, makeJsonBehavior(JSON_BEHAVIOR_NULL, NULL, location),
+												 JSON_BEHAVIOR_NULL,
+												 jsexpr->returning);
+
+		result = (Node *) jsexpr;
+	}
+
 	/* process trailing subscripts, if any */
 	if (subscripts)
 		result = (Node *) transformContainerSubscripts(pstate,

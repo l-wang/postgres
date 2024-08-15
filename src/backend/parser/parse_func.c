@@ -33,6 +33,8 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "parser/parse_oper.h"
+#include "utils/json.h"
 
 
 /* Possible error codes from LookupFuncNameInternal */
