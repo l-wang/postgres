@@ -442,6 +442,8 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 	List	   *subscripts = NIL;
 	int			location = exprLocation(result);
 	ListCell   *i;
+	bool		json_accessor = false;
+	StringInfoData jsonpath;
 
 	/*
 	 * We have to split any field-selection operations apart from
@@ -452,8 +454,37 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 	{
 		Node	   *n = lfirst(i);
 
-		if (IsA(n, A_Indices))
+		if (IsA(n, A_Indices)) {
+			if (!json_accessor && (exprType(result) == JSONOID)) {
+				json_accessor = true;
+				initStringInfo(&jsonpath);
+				appendStringInfoString(&jsonpath, " lax $");
+			}
+			if (json_accessor) {
+				Node *subExpr;
+
+				if (((A_Indices *)n)->is_slice || ((A_Indices *)n)->lidx)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									errmsg("json simplified accessor does not support slices"),
+									parser_errposition(pstate, location)));
+
+				Assert(((A_Indices *)n)->uidx);
+				subExpr = transformExpr(pstate, ((A_Indices *) n)->uidx, pstate->p_expr_kind);
+				if (exprType(subExpr) != INT4OID)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									errmsg("json simplified accessor does not support subscripting of non-int4 type"),
+									parser_errposition(pstate, location)));
+
+				appendStringInfoString(&jsonpath, "[");
+				appendStringInfo(&jsonpath, "%d", DatumGetInt32(((Const *) subExpr)->constvalue));
+				appendStringInfoString(&jsonpath, "]");
+				continue;
+			}
+
 			subscripts = lappend(subscripts, n);
+		}
 		else if (IsA(n, A_Star))
 		{
 			ereport(ERROR,
@@ -464,6 +495,13 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		else
 		{
 			Node	   *newresult;
+
+			if (!json_accessor && ((exprType(result) == JSONOID) ||
+					exprType(result) == JSONBOID)) {
+				json_accessor = true;
+				initStringInfo(&jsonpath);
+				appendStringInfoString(&jsonpath, " lax $");
+			}
 
 			Assert(IsA(n, String));
 
@@ -477,6 +515,12 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 															   false);
 			subscripts = NIL;
 
+			if (json_accessor) {
+				appendStringInfoString(&jsonpath, ".");
+				appendStringInfoString(&jsonpath, strVal(n));
+				continue;
+			}
+
 			newresult = ParseFuncOrColumn(pstate,
 										  list_make1(n),
 										  list_make1(result),
@@ -484,11 +528,34 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 										  NULL,
 										  false,
 										  location);
+
 			if (newresult == NULL)
 				unknown_attribute(pstate, result, strVal(n), location);
 			result = newresult;
 		}
 	}
+
+	if (json_accessor) {
+		JsonFuncExpr *jfe;
+		JsonValueExpr *jve;
+
+		jve = makeJsonValueExpr((Expr *) result, NULL,
+								makeJsonFormat(JS_FORMAT_DEFAULT,
+											   JS_ENC_DEFAULT,
+											   -1));
+		jfe = makeNode(JsonFuncExpr);
+		jfe->op = JSON_QUERY_OP;
+		jfe->context_item = jve;
+		jfe->pathspec = makeStringConst(jsonpath.data, -1);
+		jfe->passing = NULL;
+		jfe->on_empty = makeJsonBehavior(JSON_BEHAVIOR_NULL, NULL, location);
+		jfe->on_error = makeJsonBehavior(JSON_BEHAVIOR_NULL, NULL, location);
+		jfe->wrapper = JSW_CONDITIONAL;
+		jfe->location = location;
+
+		result = transformJsonFuncExpr(pstate, jfe);
+	}
+
 	/* process trailing subscripts, if any */
 	if (subscripts)
 		result = (Node *) transformContainerSubscripts(pstate,
