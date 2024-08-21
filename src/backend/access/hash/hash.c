@@ -108,6 +108,8 @@ hashhandler(PG_FUNCTION_ARGS)
 	amroutine->amestimateparallelscan = NULL;
 	amroutine->aminitparallelscan = NULL;
 	amroutine->amparallelrescan = NULL;
+	amroutine->amtranslatestrategy = hashtranslatestrategy;
+	amroutine->amtranslaterctype = hashtranslaterctype;
 
 	PG_RETURN_POINTER(amroutine);
 }
@@ -928,4 +930,20 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 							bstrategy);
 	else
 		LockBuffer(bucket_buf, BUFFER_LOCK_UNLOCK);
+}
+
+RowCompareType
+hashtranslatestrategy(uint16 strategy)
+{
+	if (strategy == HTEqualStrategyNumber)
+		return ROWCOMPARE_EQ;
+	return ROWCOMPARE_INVALID;
+}
+
+uint16
+hashtranslaterctype(RowCompareType rctype)
+{
+	if (rctype == ROWCOMPARE_EQ)
+		return HTEqualStrategyNumber;
+	return InvalidStrategy;
 }
