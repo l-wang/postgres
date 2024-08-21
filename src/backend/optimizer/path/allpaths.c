@@ -2288,16 +2288,15 @@ find_window_run_conditions(Query *subquery, RangeTblEntry *rte, Index rti,
 
 	runopexpr = NULL;
 	runoperator = InvalidOid;
-	opinfos = get_op_btree_interpretation(opexpr->opno);
+	opinfos = get_op_index_interpretation(opexpr->opno);
 
 	foreach(lc, opinfos)
 	{
-		OpBtreeInterpretation *opinfo = (OpBtreeInterpretation *) lfirst(lc);
-		int			strategy = opinfo->strategy;
+		OpIndexInterpretation *opinfo = (OpIndexInterpretation *) lfirst(lc);
+		RowCompareType rctype = opinfo->rctype;
 
 		/* handle < / <= */
-		if (strategy == BTLessStrategyNumber ||
-			strategy == BTLessEqualStrategyNumber)
+		if (rctype == ROWCOMPARE_LT || rctype == ROWCOMPARE_LE)
 		{
 			/*
 			 * < / <= is supported for monotonically increasing functions in
@@ -2314,8 +2313,7 @@ find_window_run_conditions(Query *subquery, RangeTblEntry *rte, Index rti,
 			break;
 		}
 		/* handle > / >= */
-		else if (strategy == BTGreaterStrategyNumber ||
-				 strategy == BTGreaterEqualStrategyNumber)
+		else if (rctype == ROWCOMPARE_GT || rctype == ROWCOMPARE_GE)
 		{
 			/*
 			 * > / >= is supported for monotonically decreasing functions in
@@ -2332,9 +2330,9 @@ find_window_run_conditions(Query *subquery, RangeTblEntry *rte, Index rti,
 			break;
 		}
 		/* handle = */
-		else if (strategy == BTEqualStrategyNumber)
+		else if (rctype == ROWCOMPARE_EQ)
 		{
-			int16		newstrategy;
+			RowCompareType newrctype;
 
 			/*
 			 * When both monotonically increasing and decreasing then the
@@ -2358,19 +2356,20 @@ find_window_run_conditions(Query *subquery, RangeTblEntry *rte, Index rti,
 			 * below the value in the equality condition.
 			 */
 			if (res->monotonic & MONOTONICFUNC_INCREASING)
-				newstrategy = wfunc_left ? BTLessEqualStrategyNumber : BTGreaterEqualStrategyNumber;
+				newrctype = wfunc_left ? ROWCOMPARE_LE : ROWCOMPARE_GE;
 			else
-				newstrategy = wfunc_left ? BTGreaterEqualStrategyNumber : BTLessEqualStrategyNumber;
+				newrctype = wfunc_left ? ROWCOMPARE_GE : ROWCOMPARE_LE;
 
 			/* We must keep the original equality qual */
 			*keep_original = true;
 			runopexpr = opexpr;
 
 			/* determine the operator to use for the WindowFuncRunCondition */
-			runoperator = get_opfamily_member(opinfo->opfamily_id,
+			runoperator = get_opmethod_member(opinfo->opmethod,
+											  opinfo->opfamily_id,
 											  opinfo->oplefttype,
 											  opinfo->oprighttype,
-											  newstrategy);
+											  newrctype);
 			break;
 		}
 	}
