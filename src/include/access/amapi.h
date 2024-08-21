@@ -339,5 +339,6 @@ extern bool IndexAmCanOrder(Oid amoid);
 extern bool IndexAmCanHash(Oid amoid);
 extern bool IndexAmCanCrossCompare(Oid amoid);
 extern bool IndexAmCanOrderAndCrossCompare(Oid amoid);
+extern bool IndexAmCanUnique(Oid amoid);
 
 #endif							/* AMAPI_H */
