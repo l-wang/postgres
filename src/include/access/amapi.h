@@ -238,6 +238,17 @@ typedef struct IndexAmRoutine
 	uint16		amoptsprocnum;
 	/* does AM support ORDER BY indexed column's value? */
 	bool		amcanorder;
+	/*
+	 * Does AM support hashing the indexed column's value, including providing
+	 * all hash semantics functions for HASHSTANDARD_PROC and HASHEXTENDED_PROC
+	 * conforming to the same calling conventions as those of the hash AM?
+	 */
+	bool		amcanhash;
+	/*
+	 * Does AM have equality semantics that are compatible across all equality
+	 * operators within an operator family?
+	 */
+	bool		amcancrosscompare;
 	/* does AM support ORDER BY result of an operator on indexed column? */
 	bool		amcanorderbyop;
 	/* does AM support backward scanning? */
@@ -313,5 +324,9 @@ typedef struct IndexAmRoutine
 /* Functions in access/index/amapi.c */
 extern IndexAmRoutine *GetIndexAmRoutine(Oid amhandler);
 extern IndexAmRoutine *GetIndexAmRoutineByAmId(Oid amoid, bool noerror);
+extern bool IndexAmCanOrder(Oid amoid);
+extern bool IndexAmCanHash(Oid amoid);
+extern bool IndexAmCanCrossCompare(Oid amoid);
+extern bool IndexAmCanOrderAndCrossCompare(Oid amoid);
 
 #endif							/* AMAPI_H */
