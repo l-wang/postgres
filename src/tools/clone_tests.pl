@@ -183,6 +183,12 @@ foreach my $regress (@regress)
 	push (@dst_regress, "$dst_sql/$regress.sql");
 	push (@src_expected, "$src_expected/$regress.out");
 	push (@dst_expected, "$dst_expected/$regress.out");
+	foreach my $alt (1,2)
+	{
+		next unless -f "$src_expected/${regress}_$alt.out";
+		push (@src_expected, "$src_expected/${regress}_$alt.out");
+		push (@dst_expected, "$dst_expected/${regress}_$alt.out");
+	}
 }
 my @isolation = grep /\w+/, split(/\s+/, $isolation);
 foreach my $isolation (@isolation)
