@@ -33,6 +33,7 @@ xash_indexam_handler(PG_FUNCTION_ARGS)
 	amroutine->amoptsprocnum = HASHOPTIONS_PROC;
 	amroutine->amcanorder = false;
 	amroutine->amcanhash = true;
+	amroutine->amcancrosscompare = false;
 	amroutine->amcanorderbyop = false;
 	amroutine->amcanbackward = true;
 	amroutine->amcanunique = false;
