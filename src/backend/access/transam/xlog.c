@@ -8090,9 +8090,7 @@ CheckTablespaceDirectory(void)
 	while ((de = ReadDir(dir, "pg_tblspc")) != NULL)
 	{
 		char        path[MAXPGPATH + 10];
-#ifndef WIN32
 		struct stat st;
-#endif
 
 		/* Skip entries of non-oid names */
 		if (strspn(de->d_name, "0123456789") != strlen(de->d_name))
@@ -8100,17 +8098,12 @@ CheckTablespaceDirectory(void)
 
 		snprintf(path, sizeof(path), "pg_tblspc/%s", de->d_name);
 
-#ifndef WIN32
 		if (lstat(path, &st) < 0)
 			ereport(LOG,
 					(errcode_for_file_access(),
 					 errmsg("could not stat file \"%s\": %m",
 							path)));
-		else if (!S_ISLNK(st.st_mode))
-#else		/* WIN32 */
-		if (!pgwin32_is_junction(path))
-#endif
-			ereport(allow_in_place_tablespaces ? WARNING : PANIC,
+		else if (!S_ISLNK(st.st_mode))ereport(allow_in_place_tablespaces ? WARNING : PANIC,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("unexpected directory entry \"%s\" found in %s",
 							de->d_name, "pg_tblspc/"),
@@ -11016,9 +11009,7 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			int			rllen;
 			StringInfoData buflinkpath;
 			char	   *s = linkpath;
-#ifndef WIN32
 			struct stat st;
-#endif
 
 			/* Skip special stuff */
 			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
@@ -11031,16 +11022,12 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			 * we sometimes use allow_in_place_tablespaces to create
 			 * directories directly under pg_tblspc, which would fail below.
 			 */
-#ifndef WIN32
 			if (lstat(fullpath, &st) < 0)
 				ereport(LOG,
 						(errcode_for_file_access(),
 						 errmsg("could not stat file \"%s\": %m",
 								fullpath)));
 			else if (!S_ISLNK(st.st_mode))
-#else			/* WIN32 */
-			if (!pgwin32_is_junction(fullpath))
-#endif
 				continue;
 
 #if defined(HAVE_READLINK) || defined(WIN32)
