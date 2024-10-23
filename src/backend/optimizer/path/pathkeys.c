@@ -101,7 +101,7 @@ make_canonical_pathkey(PlannerInfo *root, EquivalenceClass *eclass,
 			rctype == pk->pk_rctype &&
 			nulls_first == pk->pk_nulls_first)
 			return pk;
-	}
+	} // TODO: compare operator instead of the combination of opfamily, opcintype and strategy
 
 	/*
 	 * Be sure canonical pathkeys are allocated in the main planning context.
@@ -584,6 +584,26 @@ get_useful_group_keys_orderings(PlannerInfo *root, Path *path)
 	return infos;
 }
 
+static bool pathkeys_have_same_sortop(PathKey *pk1, PathKey *pk2) {
+	Oid pk_op1;
+	Oid pk_op2;
+	Oid pk_datatype;
+
+	if (pk1 == pk2)
+		return true;
+
+	if (pk1->pk_eclass != pk2->pk_eclass ||
+		pk1->pk_rctype != pk2->pk_rctype ||
+		pk1->pk_nulls_first != pk2->pk_nulls_first)
+		return false;
+
+	pk_datatype = ((EquivalenceMember *) linitial(pk1->pk_eclass->ec_members))->em_datatype;
+	pk_op1 = get_opfamily_member(pk1->pk_opfamily, pk_datatype, pk_datatype, pk1->pk_strategy);
+	pk_op2 = get_opfamily_member(pk2->pk_opfamily, pk_datatype, pk_datatype, pk2->pk_strategy);
+
+	return pk_op1 == pk_op2;
+}
+
 /*
  * pathkeys_count_contained_in
  *    Same as pathkeys_contained_in, but also sets length of longest
@@ -625,7 +645,7 @@ pathkeys_count_contained_in(List *keys1, List *keys2, int *n_common)
 		PathKey    *pathkey1 = (PathKey *) lfirst(key1);
 		PathKey    *pathkey2 = (PathKey *) lfirst(key2);
 
-		if (pathkey1 != pathkey2)
+		if (!pathkeys_have_same_sortop(pathkey1, pathkey2))
 		{
 			*n_common = n;
 			return false;
