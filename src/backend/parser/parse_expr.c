@@ -451,7 +451,16 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		Node	   *n = lfirst(i);
 
 		if (IsA(n, A_Indices))
-			subscripts = lappend(subscripts, n);
+		{
+			if (exprType(result) == JSONOID || getBaseType(exprType(result)) == JSONOID)
+				result = ParseJsonSimplifiedAccessorArrayElement(pstate,
+																 castNode(A_Indices, n),
+																 result,
+																 location);
+			else
+				subscripts = lappend(subscripts, n);
+		}
+
 		else if (IsA(n, A_Star))
 		{
 			ereport(ERROR,
@@ -462,6 +471,8 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		else
 		{
 			Node	   *newresult;
+			Oid			result_typid;
+			Oid			result_basetypid;
 
 			Assert(IsA(n, String));
 
@@ -475,13 +486,23 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 															   false);
 			subscripts = NIL;
 
-			newresult = ParseFuncOrColumn(pstate,
-										  list_make1(n),
-										  list_make1(result),
-										  last_srf,
-										  NULL,
-										  false,
-										  location);
+			result_typid = exprType(result);
+			result_basetypid = (result_typid == JSONOID || result_typid == JSONBOID) ?
+				result_typid : getBaseType(result_typid);
+
+			if (result_basetypid == JSONOID || result_basetypid == JSONBOID)
+				newresult = ParseJsonSimplifiedAccessorObjectField(pstate,
+																   strVal(n),
+																   result,
+																   location, result_basetypid);
+			else
+				newresult = ParseFuncOrColumn(pstate,
+											  list_make1(n),
+											  list_make1(result),
+											  last_srf,
+											  NULL,
+											  false,
+											  location);
 			if (newresult == NULL)
 				unknown_attribute(pstate, result, strVal(n), location);
 			result = newresult;
