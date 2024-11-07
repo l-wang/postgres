@@ -33,6 +33,8 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "parser/parse_oper.h"
+#include "catalog/pg_operator_d.h"
 
 
 /* Possible error codes from LookupFuncNameInternal */
@@ -52,7 +54,6 @@ static Oid	LookupFuncNameInternal(ObjectType objtype, List *funcname,
 								   int nargs, const Oid *argtypes,
 								   bool include_out_arguments, bool missing_ok,
 								   FuncLookupError *lookupError);
-
 
 /*
  *	Parse a function call
@@ -1900,6 +1901,88 @@ FuncNameAsType(List *funcname)
 
 	ReleaseSysCache(typtup);
 	return result;
+}
+
+/*
+ * ParseJsonSimplifiedAccessorArrayElement -
+ *	  transform json subscript into json_array_element operator.
+ */
+Node *
+ParseJsonSimplifiedAccessorArrayElement(ParseState *pstate, A_Indices *subscript,
+										Node *first_arg, int location)
+{
+	OpExpr	   *result;
+	Node	   *index;
+
+	if (exprType(first_arg) != JSONOID && getBaseType(exprType(first_arg)) != JSONOID)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("json subscript does not support type oid: %u",
+						exprType(first_arg))),
+				parser_errposition(pstate, location));
+
+	if (subscript->is_slice)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("json subscript does not support slices")),
+				parser_errposition(pstate, location));
+
+	index = transformExpr(pstate, subscript->uidx, pstate->p_expr_kind);
+	if (!IsA(index, Const) ||
+		castNode(Const, index)->consttype != INT4OID)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("json subscript must be coercible to integer")),
+				parser_errposition(pstate, exprLocation(index)));
+
+	result = makeNode(OpExpr);
+	result->opno = OID_JSON_ARRAY_ELEMENT_OP;
+	result->opresulttype = JSONOID;
+	result->opfuncid = get_opcode(result->opno);
+	result->args = list_make2(first_arg, index);
+	result->location = exprLocation(index);
+
+	return (Node *) result;
+}
+
+/*
+ * ParseJsonSimplifiedAccessorObjectField -
+ *	  handles function calls with a single argument that is of json type.
+ *	  If the function call is actually a column projection, return a suitably
+ *	  transformed expression tree.  If not, return NULL.
+ */
+Node *
+ParseJsonSimplifiedAccessorObjectField(ParseState *pstate, const char *funcname,
+									   Node *first_arg, int location, Oid basetypid)
+{
+	OpExpr	   *result;
+	Node	   *rexpr;
+
+	result = makeNode(OpExpr);
+	result->opresulttype = basetypid;
+	switch (basetypid)
+	{
+		case JSONOID:
+			result->opno = OID_JSON_OBJECT_FIELD_OP;
+			break;
+		case JSONBOID:
+			result->opno = OID_JSONB_OBJECT_FIELD_OP;
+			break;
+		default:
+			elog(ERROR, "unsupported type OID: %u", basetypid);
+	}
+	result->opfuncid = get_opcode(result->opno);
+	rexpr = (Node *) makeConst(
+							   TEXTOID,
+							   -1,
+							   InvalidOid,
+							   -1,
+							   CStringGetTextDatum(funcname),
+							   false,
+							   false);
+	result->args = list_make2(first_arg, rexpr);
+	result->location = location;
+	return (Node *) result;
 }
 
 /*
