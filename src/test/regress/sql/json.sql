@@ -871,7 +871,6 @@ select ts_headline('{}'::json, tsquery('aaa & bbb'));
 select ts_headline('[]'::json, tsquery('aaa & bbb'));
 
 -- simple dot notation
-drop table if exists test_json_dot;
 create table test_json_dot(id int, test_json json);
 insert into test_json_dot select 1, '{"a": 1, "b": 42}'::json;
 insert into test_json_dot select 1, '{"a": 2, "b": {"c": 42}}'::json;
