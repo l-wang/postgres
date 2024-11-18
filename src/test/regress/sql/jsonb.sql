@@ -1561,47 +1561,51 @@ select '12345.0000000000000000000000000000000000000000000005'::jsonb::int4;
 select '12345.0000000000000000000000000000000000000000000005'::jsonb::int8;
 
 -- simple dot notation
-create table test_jsonb_dot(id int, test_jsonb jsonb);
-insert into test_jsonb_dot select 1, '{"a": 1, "b": 42}'::json;
-insert into test_jsonb_dot select 1, '{"a": 2, "b": {"c": 42}}'::json;
-insert into test_jsonb_dot select 1, '{"a": 3, "b": {"c": "42"}, "d":[11, 12]}'::json;
+create table test_jsonb_dot(id serial primary key , test_jsonb jsonb);
+insert into test_jsonb_dot values (1, '{"a": 1, "b": 42}');
+insert into test_jsonb_dot values (2, '{"a": 2, "b": {"c": 42}}');
+insert into test_jsonb_dot values (3, '{"a": 3, "b": {"c": "42"}, "d":[11, 12]}');
+insert into test_jsonb_dot values (4, '{"a": 3, "b": {"c": "42"}, "d":[{"x": [11, 12]}, {"y": [21, 22]}]}');
 
 -- member object access
-select (test_jsonb_dot.test_jsonb).b from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb).b.c from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb).d from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb)."d" from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb).'d' from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb)['d'] from test_jsonb_dot;
-
--- array element access
-select (test_jsonb_dot.test_jsonb).d[0] from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb).d[0:] from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb).d[0::int] from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb).d[0::float] from test_jsonb_dot;
-select (test_jsonb_dot.test_jsonb).d[0].x[1] from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).b from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).b.c from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).d from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb)."d" from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).'d' from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb)['d'] from test_jsonb_dot;
 
 -- wildcard access is not supported
 select (test_jsonb_dot.test_jsonb).* from test_jsonb_dot;
 
+-- array element access
+select id, (test_jsonb_dot.test_jsonb).d[0], json_query(test_jsonb, 'lax $.d[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).d[1], json_query(test_jsonb, 'lax $.d[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).d[0:] from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).d[0::int] from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).d[0::float] from test_jsonb_dot;
+select id, (test_jsonb_dot.test_jsonb).d[0].x[1] from test_jsonb_dot;
+
 -- complex type with domain over jsonb
 create domain jsonb_d as jsonb;
-create type comp_jsonb as (a int, b jsonb_d);
-create table test_jsonb_domain_dot(a comp_jsonb);
-insert into test_jsonb_domain_dot select $$ (1,"{""a"": 3, ""key1"": {""c"": ""42""}, ""key2"": [11, 12]}") $$;
-insert into test_jsonb_domain_dot select $$ (1,"{""a"": 3, ""key1"": {""c"": ""42""}, ""key2"": [11, 12, {""x"": [31, 42]}]}") $$;
+create type comp_jsonbd as (f1 int, f2 jsonb_d);
+create table test_jsonb_domain_dot(id serial primary key, compjd comp_jsonbd);
+insert into test_jsonb_domain_dot (compjd) values (ROW(1, '{"a": 3, "key1": {"c": "42"}, "key2": [11, 12]}'));
+insert into test_jsonb_domain_dot (compjd) values (ROW(2, '{"a": 3, "key1": {"c": "42"}, "key2": [11, 12, {"x": [31, 42]}]}'));
+insert into test_jsonb_domain_dot (compjd) values (ROW(3, '[{"a": 3}, {"key1": {"c": "42"}}, {"key2": [11, 12]}]'));
+
 -- object access
-select (test_jsonb_domain_dot.a).b.key1.c from test_jsonb_domain_dot;
-select (test_jsonb_domain_dot.a).b.key2 from test_jsonb_domain_dot;
-select (test_jsonb_domain_dot.a).b.key2[0] from test_jsonb_domain_dot;
-select (test_jsonb_domain_dot.a).b.key2[0::text] from test_jsonb_domain_dot;
-select (test_jsonb_domain_dot.a).b.key2[2].x[1] from test_jsonb_domain_dot;
+select id, (test_jsonb_domain_dot.compjd).f2.key1.c from test_jsonb_domain_dot;
+select id, (test_jsonb_domain_dot.compjd).f2.key2 from test_jsonb_domain_dot;
+select id, (test_jsonb_domain_dot.compjd).f2.key2[0] from test_jsonb_domain_dot;
+select id, (test_jsonb_domain_dot.compjd).f2.key2[0::text] from test_jsonb_domain_dot;
+select id, (test_jsonb_domain_dot.compjd).f2.key2[2].x[1] from test_jsonb_domain_dot;
 -- array access
-insert into test_jsonb_domain_dot select $$ (1,"[{""a"": 3}, {""key1"": {""c"": ""42""}}, {""key2"": [11, 12]}]") $$;
-select (test_jsonb_domain_dot.a).b[0] from test_jsonb_domain_dot;
-select (test_jsonb_domain_dot.a).b[0:] from test_jsonb_domain_dot;
+select id, (test_jsonb_domain_dot.compjd).f2[0] from test_jsonb_domain_dot;
+select id, (test_jsonb_domain_dot.compjd).f2[0:] from test_jsonb_domain_dot;
+
 drop table test_jsonb_domain_dot cascade;
-drop type comp_jsonb cascade;
+drop type comp_jsonbd cascade;
 drop domain jsonb_d cascade;
 
 -- nested domains over jsonb
@@ -1623,18 +1627,20 @@ CREATE DOMAIN jsonb_user_profile AS jsonb_with_name_and_email
 CREATE TABLE jsonb_users (id SERIAL PRIMARY KEY, profile jsonb_user_profile);
 INSERT INTO jsonb_users (profile) VALUES ('{"name": "Alice", "email": "alice@example.com", "phone": "+1-123-456-7890"}');
 INSERT INTO jsonb_users (profile) VALUES ('{"name": "Bob", "email": "bob@example.com", "phone": "+9-876-543-3210", "address": [123, "1st street", "New York", "New York", 12345]}');
-SELECT (jsonb_users.profile).name from jsonb_users;
-SELECT (jsonb_users.profile).email from jsonb_users;
-SELECT (jsonb_users.profile).phone from jsonb_users;
-SELECT (jsonb_users.profile).address from jsonb_users;
-SELECT (jsonb_users.profile).address[3] from jsonb_users;
+
+SELECT id, (jsonb_users.profile).name from jsonb_users;
+SELECT id, (jsonb_users.profile).email from jsonb_users;
+SELECT id, (jsonb_users.profile).phone from jsonb_users;
+SELECT id, (jsonb_users.profile).address from jsonb_users;
+SELECT id, (jsonb_users.profile).address[3] from jsonb_users;
 
 -- array of nested domains over jsonb
 CREATE TABLE jsonb_user_arrs (id SERIAL PRIMARY KEY, profiles jsonb_user_profile[]);
 INSERT INTO jsonb_user_arrs (profiles) VALUES (ARRAY['{"name": "Alice", "email": "alice@example.com", "phone": "+1-123-456-7890"}'::jsonb_user_profile, '{"name": "Bob", "email": "bob@example.com", "phone": "+9-876-543-3210", "address": [123, "1st street", "New York", "New York", 12345]}'::jsonb_user_profile]);
-SELECT jsonb_user_arrs.profiles[1] from jsonb_user_arrs;
-SELECT jsonb_user_arrs.profiles[2] from jsonb_user_arrs;
-SELECT jsonb_user_arrs.profiles[2].address[0] from jsonb_user_arrs;
+
+SELECT id, jsonb_user_arrs.profiles[1] from jsonb_user_arrs;
+SELECT id, jsonb_user_arrs.profiles[2] from jsonb_user_arrs;
+SELECT id, jsonb_user_arrs.profiles[2].address[0] from jsonb_user_arrs;
 
 drop table jsonb_users;
 drop table jsonb_user_arrs;
