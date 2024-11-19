@@ -871,30 +871,38 @@ select ts_headline('{}'::json, tsquery('aaa & bbb'));
 select ts_headline('[]'::json, tsquery('aaa & bbb'));
 
 -- simple dot notation
+-- TODO: add comments
+
 create table test_json_dot(id serial primary key, test_json json);
 insert into test_json_dot values (1, '{"a": 1, "b": 42}');
 insert into test_json_dot values (2, '{"a": 2, "b": {"c": 42}}');
 insert into test_json_dot values (3, '{"a": 3, "b": {"c": "42"}, "d":[11, 12]}');
-insert into test_json_dot values (4, '{"a": 3, "b": {"c": "42"}, "d":[{"x": [11, 12]}, {"y": [21, 22]}]}');
+insert into test_json_dot values (4, '{"a": 4, "b": {"c": "42"}, "d":[{"x": [11, 12]}, {"y": [21, 22]}]}');
+insert into test_json_dot values (5, '[{"a": 1, "b": 42}, {"a": 2, "b": {"c": 42}}]');
 
 -- member object access
-select id, (test_json_dot.test_json).b, json_query(test_json, 'lax $.b' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
-select id, (test_json_dot.test_json).b.c, json_query(test_json, 'lax $.b.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
-select id, (test_json_dot.test_json).d, json_query(test_json, 'lax $.d' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
-select id, (test_json_dot.test_json)."d", json_query(test_json, 'lax $.d' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
-select id, (test_json_dot.test_json).'d' from test_json_dot;
-select id, (test_json_dot.test_json)['d'] from test_json_dot;
+select id, (test_json).b, json_query(test_json, 'lax $.b' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
+select id, (test_json).b.c, json_query(test_json, 'lax $.b.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
+select id, (test_json).d, json_query(test_json, 'lax $.d' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
+select id, (test_json)."d", json_query(test_json, 'lax $."d"' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
+select id, (test_json).'d' from test_json_dot;
+select id, (test_json)['d'] from test_json_dot;
 
 -- wildcard access is not supported
-select (test_json_dot.test_json).* from test_json_dot;
+select (test_json).* from test_json_dot;
 
 -- array element access
-select id, (test_json_dot.test_json).d[0], json_query(test_json, 'lax $.d[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
-select id, (test_json_dot.test_json).d[1], json_query(test_json, 'lax $.d[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
-select id, (test_json_dot.test_json).d[0:] from test_json_dot;
-select id, (test_json_dot.test_json).d[0::int] from test_json_dot;
-select id, (test_json_dot.test_json).d[0::float] from test_json_dot;
-select id, (test_json_dot.test_json).d[0].x[1], json_query(test_json, 'lax $.d[0].x[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
+select id, (test_json).d[0], json_query(test_json, 'lax $.d[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
+select id, (test_json).d[1], json_query(test_json, 'lax $.d[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
+
+select id, (test_json).d[0:] from test_json_dot;
+select id, json_query(test_json, 'lax $.d[0:]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) from test_json_dot;
+
+select id, (test_json).d[0::int] from test_json_dot;
+select id, json_query(test_json, 'lax $.d[0::int]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) from test_json_dot;
+select id, (test_json).d[0::float] from test_json_dot;
+
+select id, (test_json).d[0].x[1], json_query(test_json, 'lax $.d[0].x[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
 
 -- complex type with domain over json
 create domain json_d as json;
@@ -905,13 +913,14 @@ insert into test_json_domain_dot (compjd) values (ROW(2, '{"a": 3, "key1": {"c":
 insert into test_json_domain_dot (compjd) values (ROW(3, '[{"a": 3}, {"key1": {"c": "42"}}, {"key2": [11, 12]}]'));
 
 --object access
-select id, (test_json_domain_dot.compjd).f2.key1.c from test_json_domain_dot;
-select id, (test_json_domain_dot.compjd).f2.key2 from test_json_domain_dot;
-select id, (test_json_domain_dot.compjd).f2.key2[0] from test_json_domain_dot;
-select id, (test_json_domain_dot.compjd).f2.key2[0::text] from test_json_domain_dot;
-select id, (test_json_domain_dot.compjd).f2.key2[2].x[1] from test_json_domain_dot;
+select id, (compjd).f2.key1.c, json_query((compjd).f2, 'lax $.key1.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
+select id, (compjd).f2.key2, json_query((compjd).f2, 'lax $.key2' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
+select id, (compjd).f2.key2[0], json_query((compjd).f2, 'lax $.key2[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
+select id, (compjd).f2.key2[0::text] from test_json_domain_dot;
+select json_query((compjd).f2, 'lax $.key2[0::text]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) from test_json_domain_dot;
+select id, (test_json_domain_dot.compjd).f2.key2[2].x[1], json_query((compjd).f2, 'lax $.key2[2].x[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
 -- array access
-select id, (test_json_domain_dot.compjd).f2[0] from test_json_domain_dot;
+select id, (compjd).f2[0], json_query((compjd).f2, 'lax $[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
 select id, (test_json_domain_dot.compjd).f2[0:] from test_json_domain_dot;
 
 drop table test_json_domain_dot cascade;
