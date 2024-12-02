@@ -39,6 +39,9 @@
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 #include "utils/xml.h"
+#include "nodes/pg_list.h"
+#include "nodes/nodes.h"
+#include "port/pg_bitutils.h"
 
 /* GUC parameters */
 bool		Transform_null_equals = false;
@@ -440,6 +443,8 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 	List	   *subscripts = NIL;
 	int			location = exprLocation(result);
 	ListCell   *i;
+	bool		json_accessor_chain_first = false;
+	bool		json_accessor_chain_last = false;
 
 	/*
 	 * We have to split any field-selection operations apart from
@@ -453,10 +458,15 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		if (IsA(n, A_Indices))
 		{
 			if (exprType(result) == JSONOID || getBaseType(exprType(result)) == JSONOID)
+			{
+				json_accessor_chain_first = (i == list_head(ind->indirection));
+				if (lnext(ind->indirection, i) == NULL)
+					json_accessor_chain_last = true;
 				result = ParseJsonSimplifiedAccessorArrayElement(pstate,
 																 castNode(A_Indices, n),
 																 result,
 																 location);
+			}
 			else
 				subscripts = lappend(subscripts, n);
 		}
@@ -490,11 +500,23 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 			result_basetypid = (result_typid == JSONOID || result_typid == JSONBOID) ?
 				result_typid : getBaseType(result_typid);
 
-			if (result_basetypid == JSONOID || result_basetypid == JSONBOID)
-				newresult = ParseJsonSimplifiedAccessorObjectField(pstate,
+			if (result_basetypid == JSONBOID) // TODO
+				newresult = ParseJsonbSimplifiedAccessorObjectField(pstate,
 																   strVal(n),
 																   result,
 																   location, result_basetypid);
+			else if (result_basetypid == JSONOID)
+			{
+				json_accessor_chain_first = (i == list_head(ind->indirection));
+				if (lnext(ind->indirection, i) == NULL)
+					json_accessor_chain_last = true;
+				newresult = ParseJsonSimplifiedAccessorObjectField(pstate,
+																   strVal(n),
+																   result,
+																   location, result_basetypid,
+																   json_accessor_chain_first,
+																   json_accessor_chain_last);
+			}
 			else
 				newresult = ParseFuncOrColumn(pstate,
 											  list_make1(n),

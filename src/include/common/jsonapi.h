@@ -108,6 +108,11 @@ typedef struct JsonLexContext
 	bool		incremental;
 	JsonTokenType token_type;
 	int			lex_level;
+	bool		dot_notation; // TODO: create a struct
+	bool		dot_notation_first_op;
+	bool		dot_notation_last_op;
+	bool		dot_notation_parsing_added_outer_array;
+	bool		unwrapped;
 	bits32		flags;
 	int			line_number;	/* line number, starting from 1 */
 	const char *line_start;		/* where that line starts within input */

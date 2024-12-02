@@ -1946,13 +1946,13 @@ ParseJsonSimplifiedAccessorArrayElement(ParseState *pstate, A_Indices *subscript
 }
 
 /*
- * ParseJsonSimplifiedAccessorObjectField -
+ * ParseJsonbSimplifiedAccessorObjectField -
  *	  handles function calls with a single argument that is of json type.
  *	  If the function call is actually a column projection, return a suitably
  *	  transformed expression tree.  If not, return NULL.
  */
 Node *
-ParseJsonSimplifiedAccessorObjectField(ParseState *pstate, const char *funcname,
+ParseJsonbSimplifiedAccessorObjectField(ParseState *pstate, const char *funcname,
 									   Node *first_arg, int location, Oid basetypid)
 {
 	OpExpr	   *result;
@@ -1982,6 +1982,42 @@ ParseJsonSimplifiedAccessorObjectField(ParseState *pstate, const char *funcname,
 							   false);
 	result->args = list_make2(first_arg, rexpr);
 	result->location = location;
+	return (Node *) result;
+}
+
+/*
+ * ParseJsonSimplifiedAccessorObjectField -
+ *	  handles function calls with a single argument that is of json type.
+ *	  If the function call is actually a column projection, return a suitably
+ *	  transformed expression tree.  If not, return NULL.
+ */
+Node *
+ParseJsonSimplifiedAccessorObjectField(ParseState *pstate, const char *funcname, Node *first_arg, int location,
+									   Oid basetypid, bool first_op, bool last_op)
+{
+	FuncExpr   *result;
+	Node	   *rexpr;
+
+	if (basetypid != JSONOID)
+		elog(ERROR, "unsupported type OID: %u", basetypid);
+
+	rexpr = (Node *) makeConst(
+			TEXTOID,
+			-1,
+			InvalidOid,
+			-1,
+			CStringGetTextDatum(funcname),
+			false,
+			false);
+	result = makeFuncExpr(4099,
+						  JSONOID,
+						  list_make4(first_arg, rexpr,
+									 makeBoolConst(first_op, false),
+									 makeBoolConst(last_op, false)),
+						  InvalidOid,
+						  InvalidOid,
+						  COERCE_EXPLICIT_CALL);
+
 	return (Node *) result;
 }
 

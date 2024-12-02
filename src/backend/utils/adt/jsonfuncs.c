@@ -96,6 +96,7 @@ typedef struct GetState
 	bool	   *pathok;			/* is path matched to current depth? */
 	int		   *array_cur_index;	/* current element index at each path
 									 * level */
+	List	   *tresult_list; /* for case of array unwrap */
 } GetState;
 
 /* state for json_array_length */
@@ -357,8 +358,8 @@ static JsonParseErrorType get_scalar(void *state, char *token, JsonTokenType tok
 
 /* common worker function for json getter functions */
 static Datum get_path_all(FunctionCallInfo fcinfo, bool as_text);
-static text *get_worker(text *json, char **tpath, int *ipath, int npath,
-						bool normalize_results);
+static text *get_worker(text *json, char **tpath, int *ipath, int npath, bool normalize_results);
+static text *get_worker_dot(text *json, char **tpath, int *ipath, int npath, bool normalize_results, bool first_op, bool last_op);
 static Datum get_jsonb_path_all(FunctionCallInfo fcinfo, bool as_text);
 static text *JsonbValueAsText(JsonbValue *v);
 
@@ -858,6 +859,24 @@ json_object_field(PG_FUNCTION_ARGS)
 }
 
 Datum
+json_object_field_dot(PG_FUNCTION_ARGS)
+{
+	text	   *json = PG_GETARG_TEXT_PP(0);
+	text	   *fname = PG_GETARG_TEXT_PP(1);
+	bool		first_op = PG_GETARG_BOOL(2);
+	bool		last_op = PG_GETARG_BOOL(3);
+	char	   *fnamestr = text_to_cstring(fname);
+	text	   *result;
+
+	result = get_worker_dot(json, &fnamestr, NULL, 1, false, first_op, last_op);
+
+	if (result != NULL)
+		PG_RETURN_TEXT_P(result);
+	else
+		PG_RETURN_NULL();
+}
+
+Datum
 jsonb_object_field(PG_FUNCTION_ARGS)
 {
 	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
@@ -1123,6 +1142,79 @@ get_worker(text *json,
 	if (npath > 0)
 		state->pathok[0] = true;
 
+	sem->semstate = (void *) state;
+
+	/*
+	 * Not all variants need all the semantic routines. Only set the ones that
+	 * are actually needed for maximum efficiency.
+	 */
+	sem->scalar = get_scalar;
+	if (npath == 0)
+	{
+		sem->object_start = get_object_start;
+		sem->object_end = get_object_end;
+		sem->array_start = get_array_start;
+		sem->array_end = get_array_end;
+	}
+	if (tpath != NULL)
+	{
+		sem->object_field_start = get_object_field_start;
+		sem->object_field_end = get_object_field_end;
+	}
+	if (ipath != NULL)
+	{
+		sem->array_start = get_array_start;
+		sem->array_element_start = get_array_element_start;
+		sem->array_element_end = get_array_element_end;
+	}
+
+	pg_parse_json_or_ereport(state->lex, sem);
+	freeJsonLexContext(state->lex);
+
+	return state->tresult;
+}
+
+/*
+ * get_worker_dot
+ *
+ * variation of get_worker, for the json dot notation's getter function
+ *
+ * json: JSON object (in text form)
+ * tpath[]: field name(s) to extract
+ * ipath[]: array index(es) (zero-based) to extract, accepts negatives
+ * npath: length of tpath[] and/or ipath[]
+ * normalize_results: true to de-escape string and null scalars
+ *
+ * tpath can be NULL, or any one tpath[] entry can be NULL, if an object
+ * field is not to be matched at that nesting level.  Similarly, ipath can
+ * be NULL, or any one ipath[] entry can be INT_MIN if an array element is
+ * not to be matched at that nesting level (a json datum should never be
+ * large enough to have -INT_MIN elements due to MaxAllocSize restriction).
+ */
+static text *
+get_worker_dot(text *json, char **tpath, int *ipath, int npath, bool normalize_results, bool first_op, bool last_op)
+{
+	JsonSemAction *sem = palloc0(sizeof(JsonSemAction));
+	GetState   *state = palloc0(sizeof(GetState));
+
+	Assert(npath >= 0);
+
+	state->lex = makeJsonLexContext(NULL, json, true);
+	state->lex->dot_notation = true;
+	state->lex->dot_notation_first_op = first_op;
+	state->lex->dot_notation_last_op = last_op;
+
+	/* is it "_as_text" variant? */
+	state->normalize_results = normalize_results;
+	state->npath = npath;
+	state->path_names = tpath;
+	state->path_indexes = ipath;
+	state->pathok = palloc0(sizeof(bool) * npath);
+	state->array_cur_index = palloc(sizeof(int) * npath);
+
+	if (npath > 0)
+		state->pathok[0] = true;
+
 	sem->semstate = state;
 
 	/*
@@ -1151,6 +1243,40 @@ get_worker(text *json,
 
 	pg_parse_json_or_ereport(state->lex, sem);
 	freeJsonLexContext(state->lex);
+
+	/*
+	 * For dot notation:
+	 * wrap the list of found values into a single text result.
+	 */
+	if (state->tresult_list != NULL)
+	{
+		if (last_op && list_length(state->tresult_list) == 1)
+			return linitial(state->tresult_list);
+		else
+		{
+			StringInfo	result = makeStringInfo();
+			ListCell   *lc;
+			bool		first = true;
+			text 	   *wrapped_tresult;
+
+			appendStringInfoChar(result, '[');
+			foreach(lc, state->tresult_list)
+			{
+				text	*tresult = (text *) lfirst(lc);
+
+				if (!first)
+					appendStringInfoString(result, ", ");
+
+				appendStringInfo(result, "%s", text_to_cstring(tresult));
+				first = false;
+			}
+			appendStringInfoChar(result, ']');
+
+			wrapped_tresult = cstring_to_text(result->data);
+			pfree(result->data);
+			return wrapped_tresult;
+		}
+	}
 
 	return state->tresult;
 }
@@ -1279,8 +1405,12 @@ get_object_field_end(void *state, char *fname, bool isnull)
 		{
 			const char *start = _state->result_start;
 			int			len = _state->lex->prev_token_terminator - start;
+			text	   *tresult = cstring_to_text_with_len(start, len);
 
-			_state->tresult = cstring_to_text_with_len(start, len);
+			if (_state->lex->unwrapped)
+				_state->tresult_list = lappend(_state->tresult_list, tresult);
+			else
+				_state->tresult = tresult;
 		}
 
 		/* this should be unnecessary but let's do it for cleanliness: */
