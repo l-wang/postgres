@@ -105,7 +105,10 @@ typedef struct JsonLexContext
 	const char *prev_token_terminator;
 	bool		incremental;
 	JsonTokenType token_type;
-	int			lex_level;
+	int			lex_level; /* total level including both array and object */
+//	int 		lex_array_level; /* level inside arrays only */
+	bool		unwrap;
+	bool		unwrapped;
 	bits32		flags;
 	int			line_number;	/* line number, starting from 1 */
 	const char *line_start;		/* where that line starts within input */

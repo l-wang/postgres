@@ -713,16 +713,22 @@ pg_parse_json(JsonLexContext *lex, const JsonSemAction *sem)
 
 	tok = lex_peek(lex);
 
-	/* parse by recursive descent */
+	/*
+	 * parse by recursive descent
+	 * array unwrap is only applicable if parsing an array and
+	 * is only applicable to the outermost array.
+	 */
 	switch (tok)
 	{
 		case JSON_TOKEN_OBJECT_START:
+			lex->unwrap = false;
 			result = parse_object(lex, sem);
 			break;
 		case JSON_TOKEN_ARRAY_START:
 			result = parse_array(lex, sem);
 			break;
 		default:
+			lex->unwrap = false;
 			result = parse_scalar(lex, sem);	/* json can be a bare scalar */
 	}
 
@@ -1428,6 +1434,7 @@ parse_array(JsonLexContext *lex, const JsonSemAction *sem)
 	json_struct_action astart = sem->array_start;
 	json_struct_action aend = sem->array_end;
 	JsonParseErrorType result;
+	bool unwrap_this = false;
 
 #ifndef FRONTEND
 	check_stack_depth();
@@ -1446,7 +1453,14 @@ parse_array(JsonLexContext *lex, const JsonSemAction *sem)
 	 * for the array start and restore it before we call the routine for the
 	 * array end.
 	 */
-	lex->lex_level++;
+	if (!lex->unwrap || lex->unwrapped)
+		lex->lex_level++;
+	else if (lex->unwrap)
+	{
+		if (!lex->unwrapped)
+			unwrap_this = true;
+		lex->unwrapped = true;
+	}
 
 	result = lex_expect(JSON_PARSE_ARRAY_START, lex, JSON_TOKEN_ARRAY_START);
 	if (result == JSON_SUCCESS && lex_peek(lex) != JSON_TOKEN_ARRAY_END)
@@ -1468,7 +1482,8 @@ parse_array(JsonLexContext *lex, const JsonSemAction *sem)
 	if (result != JSON_SUCCESS)
 		return result;
 
-	lex->lex_level--;
+	if (!lex->unwrap || !unwrap_this)
+		lex->lex_level--;
 
 	if (aend != NULL)
 	{

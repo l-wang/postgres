@@ -34,8 +34,10 @@ typedef enum
 extern Node *ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 							   Node *last_srf, FuncCall *fn, bool proc_call,
 							   int location);
-extern Node *ParseJsonSimplifiedAccessorObjectField(ParseState *pstate, const char *funcname,
+extern Node *ParseJsonbSimplifiedAccessorObjectField(ParseState *pstate, const char *funcname,
 													Node *first_arg, int location, Oid basetypid);
+extern Node *ParseJsonSimplifiedAccessorObjectField(ParseState *pstate, const char *funcname,
+													 Node *first_arg, int location, Oid basetypid);
 extern Node *ParseJsonSimplifiedAccessorArrayElement(ParseState *pstate, A_Indices *subscript,
 													 Node *first_arg, int location);
 

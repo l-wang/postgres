@@ -879,10 +879,23 @@ insert into test_json_dot values (2, '{"a": 2, "b": {"c": 42}}');
 insert into test_json_dot values (3, '{"a": 3, "b": {"c": "42"}, "d":[11, 12]}');
 insert into test_json_dot values (4, '{"a": 4, "b": {"c": "42"}, "d":[{"x": [11, 12]}, {"y": [21, 22]}]}');
 insert into test_json_dot values (5, '[{"a": 1, "b": 42}, {"a": 2, "b": {"c": 42}}]');
+insert into test_json_dot values (61, '[{"b": 42}, {"b": [{"c": 42}]}]'); -- $.b => '[42, [{"c": 42}]]'
+insert into test_json_dot values (62, '[42, [{"b": 42}]]'); -- [42, [{"c": 42}]]
+insert into test_json_dot values (63, '[{"b": 42}, {"b": [{"c": 42}, 42]}]');
+insert into test_json_dot values (64, '[1, {"b": [{"c": 42}]}]');
+insert into test_json_dot values (65, '[{"b": 42}]');
+insert into test_json_dot values (66, '[[{"b": 42}]]');
+insert into test_json_dot values (67, '[42, {"a": [{"b": 42}, {"b": [{"c": 42}]}]}]');
+insert into test_json_dot values (7, '[{"b": 42}, {"b": [[{"c": 42}, {"d" : 3}]]}]');
+insert into test_json_dot values (8, '{"b": [[{"c": 42}, {"d" : 3}]]}');
+insert into test_json_dot values (9, '[[{"b": 42}]]');
+insert into test_json_dot values (10, '[{"b": [{"c": 42}, {"d" : 3}]}]');
+insert into test_json_dot values (11, '[{"b": null}, {"b": null}]');
 
 -- member object access
 select id, (test_json).b, json_query(test_json, 'lax $.b' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
 select id, (test_json).b.c, json_query(test_json, 'lax $.b.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
+select id, (test_json).a.b.c, json_query(test_json, 'lax $.a.b.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
 select id, (test_json).d, json_query(test_json, 'lax $.d' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
 select id, (test_json)."d", json_query(test_json, 'lax $."d"' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
 select id, (test_json).'d' from test_json_dot;

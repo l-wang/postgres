@@ -96,6 +96,7 @@ typedef struct GetState
 	bool	   *pathok;			/* is path matched to current depth? */
 	int		   *array_cur_index;	/* current element index at each path
 									 * level */
+	List	   *tresult_list; /* for case of array unwrap */
 } GetState;
 
 /* state for json_array_length */
@@ -358,7 +359,7 @@ static JsonParseErrorType get_scalar(void *state, char *token, JsonTokenType tok
 /* common worker function for json getter functions */
 static Datum get_path_all(FunctionCallInfo fcinfo, bool as_text);
 static text *get_worker(text *json, char **tpath, int *ipath, int npath,
-						bool normalize_results);
+						bool normalize_results, bool unwrap);
 static Datum get_jsonb_path_all(FunctionCallInfo fcinfo, bool as_text);
 static text *JsonbValueAsText(JsonbValue *v);
 
@@ -849,7 +850,23 @@ json_object_field(PG_FUNCTION_ARGS)
 	char	   *fnamestr = text_to_cstring(fname);
 	text	   *result;
 
-	result = get_worker(json, &fnamestr, NULL, 1, false);
+	result = get_worker(json, &fnamestr, NULL, 1, false, false);
+
+	if (result != NULL)
+		PG_RETURN_TEXT_P(result);
+	else
+		PG_RETURN_NULL();
+}
+
+Datum
+json_object_field_unwrap(PG_FUNCTION_ARGS)
+{
+	text	   *json = PG_GETARG_TEXT_PP(0);
+	text	   *fname = PG_GETARG_TEXT_PP(1);
+	char	   *fnamestr = text_to_cstring(fname);
+	text	   *result;
+
+	result = get_worker(json, &fnamestr, NULL, 1, false, true);
 
 	if (result != NULL)
 		PG_RETURN_TEXT_P(result);
@@ -887,7 +904,7 @@ json_object_field_text(PG_FUNCTION_ARGS)
 	char	   *fnamestr = text_to_cstring(fname);
 	text	   *result;
 
-	result = get_worker(json, &fnamestr, NULL, 1, true);
+	result = get_worker(json, &fnamestr, NULL, 1, true, false);
 
 	if (result != NULL)
 		PG_RETURN_TEXT_P(result);
@@ -924,7 +941,7 @@ json_array_element(PG_FUNCTION_ARGS)
 	int			element = PG_GETARG_INT32(1);
 	text	   *result;
 
-	result = get_worker(json, NULL, &element, 1, false);
+	result = get_worker(json, NULL, &element, 1, false, false);
 
 	if (result != NULL)
 		PG_RETURN_TEXT_P(result);
@@ -967,7 +984,7 @@ json_array_element_text(PG_FUNCTION_ARGS)
 	int			element = PG_GETARG_INT32(1);
 	text	   *result;
 
-	result = get_worker(json, NULL, &element, 1, true);
+	result = get_worker(json, NULL, &element, 1, true, false);
 
 	if (result != NULL)
 		PG_RETURN_TEXT_P(result);
@@ -1073,7 +1090,7 @@ get_path_all(FunctionCallInfo fcinfo, bool as_text)
 			ipath[i] = INT_MIN;
 	}
 
-	result = get_worker(json, tpath, ipath, npath, as_text);
+	result = get_worker(json, tpath, ipath, npath, as_text, false);
 
 	if (result != NULL)
 		PG_RETURN_TEXT_P(result);
@@ -1103,7 +1120,8 @@ get_worker(text *json,
 		   char **tpath,
 		   int *ipath,
 		   int npath,
-		   bool normalize_results)
+		   bool normalize_results,
+		   bool unwrap)
 {
 	JsonSemAction *sem = palloc0(sizeof(JsonSemAction));
 	GetState   *state = palloc0(sizeof(GetState));
@@ -1111,6 +1129,7 @@ get_worker(text *json,
 	Assert(npath >= 0);
 
 	state->lex = makeJsonLexContext(NULL, json, true);
+	state->lex->unwrap = unwrap;
 
 	/* is it "_as_text" variant? */
 	state->normalize_results = normalize_results;
@@ -1151,6 +1170,39 @@ get_worker(text *json,
 
 	pg_parse_json_or_ereport(state->lex, sem);
 	freeJsonLexContext(state->lex);
+
+	/*
+	 * For dot notation:
+	 * wrap the list of found values into a single text result.
+	 */
+	if (unwrap && state->tresult_list != NULL)
+	{
+		if (list_length(state->tresult_list) == 1)
+			return linitial(state->tresult_list);
+		else
+		{
+			StringInfo	result = makeStringInfo();
+			ListCell   *lc;
+			bool		first = true;
+
+			appendStringInfoChar(result, '[');
+			foreach(lc, state->tresult_list)
+			{
+				text	*tresult = (text *) lfirst(lc);
+
+				if (!first)
+					appendStringInfoString(result, ", ");
+
+				appendStringInfo(result, "%s", text_to_cstring(tresult));
+				first = false;
+			}
+			appendStringInfoChar(result, ']');
+
+			text *rst = cstring_to_text(result->data);
+			pfree(result->data);
+			return rst;
+		}
+	}
 
 	return state->tresult;
 }
@@ -1279,8 +1331,12 @@ get_object_field_end(void *state, char *fname, bool isnull)
 		{
 			const char *start = _state->result_start;
 			int			len = _state->lex->prev_token_terminator - start;
+			text	   *tresult = cstring_to_text_with_len(start, len);
 
-			_state->tresult = cstring_to_text_with_len(start, len);
+			if (_state->lex->unwrapped)
+				_state->tresult_list = lappend(_state->tresult_list, tresult);
+			else
+				_state->tresult = tresult;
 		}
 
 		/* this should be unnecessary but let's do it for cleanliness: */

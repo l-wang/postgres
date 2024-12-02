@@ -490,11 +490,16 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 			result_basetypid = (result_typid == JSONOID || result_typid == JSONBOID) ?
 				result_typid : getBaseType(result_typid);
 
-			if (result_basetypid == JSONOID || result_basetypid == JSONBOID)
-				newresult = ParseJsonSimplifiedAccessorObjectField(pstate,
+			if (result_basetypid == JSONBOID)
+				newresult = ParseJsonbSimplifiedAccessorObjectField(pstate,
 																   strVal(n),
 																   result,
 																   location, result_basetypid);
+			else if (result_basetypid == JSONOID)
+				newresult = ParseJsonSimplifiedAccessorObjectField(pstate,
+																	strVal(n),
+																	result,
+																	location, result_basetypid);
 			else
 				newresult = ParseFuncOrColumn(pstate,
 											  list_make1(n),

@@ -9295,6 +9295,10 @@
 { oid => '3968', descr => 'get the type of a json value',
   proname => 'json_typeof', prorettype => 'text', proargtypes => 'json',
   prosrc => 'json_typeof' },
+{ oid => '4099',
+  proname => 'json_object_field_unwrap', prorettype => 'json',
+  proargtypes => 'json text', proargnames => '{from_json, field_name}',
+  prosrc => 'json_object_field_unwrap' },
 
 # uuid
 { oid => '2952', descr => 'I/O',
