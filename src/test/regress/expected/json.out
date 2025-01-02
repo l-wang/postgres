@@ -2718,392 +2718,104 @@ select ts_headline('[]'::json, tsquery('aaa & bbb'));
 
 -- simple dot notation
 -- TODO: add comments
-create table test_json_dot(id serial primary key, test_json json);
-insert into test_json_dot values (1, '{"a": 1, "b": 42}');
-insert into test_json_dot values (2, '{"a": 2, "b": {"c": 42}}');
-insert into test_json_dot values (3, '{"a": 3, "b": {"c": "42"}, "d":[11, 12]}');
-insert into test_json_dot values (4, '{"a": 4, "b": {"c": "42"}, "d":[{"x": [11, 12]}, {"y": [21, 22]}]}');
-insert into test_json_dot values (5, '[{"a": 1, "b": 42}, {"a": 2, "b": {"c": 42}}]');
-insert into test_json_dot values (61, '[{"b": 42}, {"b": [{"c": 42}]}]'); -- $.b => '[42, [{"c": 42}]]'
-insert into test_json_dot values (62, '[42, [{"b": 42}]]'); -- [42, [{"c": 42}]]
-insert into test_json_dot values (63, '[{"b": 42}, {"b": [{"c": 42}, 42]}]');
-insert into test_json_dot values (64, '[1, {"b": [{"c": 42}]}]');
-insert into test_json_dot values (65, '[{"b": 42}]');
-insert into test_json_dot values (66, '[[{"b": 42}]]');
-insert into test_json_dot values (67, '[42, {"a": [{"b": 42}, {"b": [{"c": 42}]}]}]');
-insert into test_json_dot values (7, '[{"b": 42}, {"b": [[{"c": 42}, {"d" : 3}]]}]');
-insert into test_json_dot values (8, '{"b": [[{"c": 42}, {"d" : 3}]]}');
-insert into test_json_dot values (9, '[[{"b": 42}]]');
-insert into test_json_dot values (10, '[{"b": [{"c": 42}, {"d" : 3}]}]');
-insert into test_json_dot values (11, '[{"b": null}, {"b": null}]');
--- member object access
-select id, (test_json).b, json_query(test_json, 'lax $.b' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
- id |               b                |           expected            
-----+--------------------------------+-------------------------------
-  1 | 42                             | 42
-  2 | {"c": 42}                      | {"c": 42}
-  3 | {"c": "42"}                    | {"c": "42"}
-  4 | {"c": "42"}                    | {"c": "42"}
-  5 | [42, {"c": 42}]                | [42, {"c": 42}]
- 61 | [42, [{"c": 42}]]              | [42, [{"c": 42}]]
- 62 |                                | 
- 63 | [42, [{"c": 42}, 42]]          | [42, [{"c": 42}, 42]]
- 64 | [{"c": 42}]                    | [{"c": 42}]
- 65 | 42                             | 42
- 66 |                                | 
- 67 |                                | 
-  7 | [42, [[{"c": 42}, {"d" : 3}]]] | [42, [[{"c": 42}, {"d": 3}]]]
-  8 | [[{"c": 42}, {"d" : 3}]]       | [[{"c": 42}, {"d": 3}]]
-  9 |                                | 
- 10 | [{"c": 42}, {"d" : 3}]         | [{"c": 42}, {"d": 3}]
- 11 | [null, null]                   | [null, null]
-(17 rows)
+CREATE OR REPLACE FUNCTION test_json_dot_notation(
+    vep json, -- value expression primary
+    jc  text -- JSON simplified accessor operator chain
+)
+    RETURNS TABLE(dot_access json, expected jsonb)
+    LANGUAGE plpgsql
+AS $$
+DECLARE
+    dyn_sql text;
+BEGIN
+    dyn_sql := format($f$
+    SELECT
+       (vep).%s AS dot_access,
+       json_query(vep, 'lax $.%s' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) AS expected
+    FROM (SELECT $1::json AS vep) dummy
+  $f$, jc, jc);
 
-select id, (test_json).b.c, json_query(test_json, 'lax $.b.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
- id |  c   | expected 
-----+------+----------
-  1 |      | 
-  2 | 42   | 42
-  3 | "42" | "42"
-  4 | "42" | "42"
-  5 | 42   | 42
- 61 |      | 42
- 62 |      | 
- 63 |      | 42
- 64 | 42   | 42
- 65 |      | 
- 66 |      | 
- 67 |      | 
-  7 |      | 
-  8 |      | 
-  9 |      | 
- 10 | 42   | 42
- 11 |      | 
-(17 rows)
+--     -- OPTIONAL: Just to see the constructed SQL in logs
+--     RAISE NOTICE 'Executing: %', dyn_sql;
 
-select id, (test_json).a.b.c, json_query(test_json, 'lax $.a.b.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
- id | c | expected 
-----+---+----------
-  1 |   | 
-  2 |   | 
-  3 |   | 
-  4 |   | 
-  5 |   | 
- 61 |   | 
- 62 |   | 
- 63 |   | 
- 64 |   | 
- 65 |   | 
- 66 |   | 
- 67 |   | 42
-  7 |   | 
-  8 |   | 
-  9 |   | 
- 10 |   | 
- 11 |   | 
-(17 rows)
-
-select id, (test_json).d, json_query(test_json, 'lax $.d' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
- id |                 d                  |              expected              
-----+------------------------------------+------------------------------------
-  1 |                                    | 
-  2 |                                    | 
-  3 | [11, 12]                           | [11, 12]
-  4 | [{"x": [11, 12]}, {"y": [21, 22]}] | [{"x": [11, 12]}, {"y": [21, 22]}]
-  5 |                                    | 
- 61 |                                    | 
- 62 |                                    | 
- 63 |                                    | 
- 64 |                                    | 
- 65 |                                    | 
- 66 |                                    | 
- 67 |                                    | 
-  7 |                                    | 
-  8 |                                    | 
-  9 |                                    | 
- 10 |                                    | 
- 11 |                                    | 
-(17 rows)
-
-select id, (test_json)."d", json_query(test_json, 'lax $."d"' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
- id |                 d                  |              expected              
-----+------------------------------------+------------------------------------
-  1 |                                    | 
-  2 |                                    | 
-  3 | [11, 12]                           | [11, 12]
-  4 | [{"x": [11, 12]}, {"y": [21, 22]}] | [{"x": [11, 12]}, {"y": [21, 22]}]
-  5 |                                    | 
- 61 |                                    | 
- 62 |                                    | 
- 63 |                                    | 
- 64 |                                    | 
- 65 |                                    | 
- 66 |                                    | 
- 67 |                                    | 
-  7 |                                    | 
-  8 |                                    | 
-  9 |                                    | 
- 10 |                                    | 
- 11 |                                    | 
-(17 rows)
-
-select id, (test_json).'d' from test_json_dot;
-ERROR:  syntax error at or near "'d'"
-LINE 1: select id, (test_json).'d' from test_json_dot;
-                               ^
-select id, (test_json)['d'] from test_json_dot;
-ERROR:  json subscript must be coercible to integer
-LINE 1: select id, (test_json)['d'] from test_json_dot;
-                               ^
--- wildcard access is not supported
-select (test_json).* from test_json_dot;
-ERROR:  type json is not composite
--- array element access
-select id, (test_json).d[0], json_query(test_json, 'lax $.d[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
- id |        d        |    expected     
-----+-----------------+-----------------
-  1 |                 | 
-  2 |                 | 
-  3 | 11              | 11
-  4 | {"x": [11, 12]} | {"x": [11, 12]}
-  5 |                 | 
- 61 |                 | 
- 62 |                 | 
- 63 |                 | 
- 64 |                 | 
- 65 |                 | 
- 66 |                 | 
- 67 |                 | 
-  7 |                 | 
-  8 |                 | 
-  9 |                 | 
- 10 |                 | 
- 11 |                 | 
-(17 rows)
-
-select id, (test_json).d[1], json_query(test_json, 'lax $.d[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
- id |        d        |    expected     
-----+-----------------+-----------------
-  1 |                 | 
-  2 |                 | 
-  3 | 12              | 12
-  4 | {"y": [21, 22]} | {"y": [21, 22]}
-  5 |                 | 
- 61 |                 | 
- 62 |                 | 
- 63 |                 | 
- 64 |                 | 
- 65 |                 | 
- 66 |                 | 
- 67 |                 | 
-  7 |                 | 
-  8 |                 | 
-  9 |                 | 
- 10 |                 | 
- 11 |                 | 
-(17 rows)
-
-select id, (test_json).d[0:] from test_json_dot;
-ERROR:  json subscript does not support slices
-LINE 1: select id, (test_json).d[0:] from test_json_dot;
-                    ^
-select id, json_query(test_json, 'lax $.d[0:]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) from test_json_dot;
-ERROR:  syntax error at or near ":" of jsonpath input
-LINE 1: select id, json_query(test_json, 'lax $.d[0:]' WITH CONDITIO...
-                                         ^
-select id, (test_json).d[0::int] from test_json_dot;
- id |        d        
-----+-----------------
-  1 | 
-  2 | 
-  3 | 11
-  4 | {"x": [11, 12]}
-  5 | 
- 61 | 
- 62 | 
- 63 | 
- 64 | 
- 65 | 
- 66 | 
- 67 | 
-  7 | 
-  8 | 
-  9 | 
- 10 | 
- 11 | 
-(17 rows)
-
-select id, json_query(test_json, 'lax $.d[0::int]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) from test_json_dot;
-ERROR:  syntax error at or near ":" of jsonpath input
-LINE 1: select id, json_query(test_json, 'lax $.d[0::int]' WITH COND...
-                                         ^
-select id, (test_json).d[0::float] from test_json_dot;
-ERROR:  json subscript must be coercible to integer
-LINE 1: select id, (test_json).d[0::float] from test_json_dot;
-                                 ^
-select id, (test_json).d[0].x[1], json_query(test_json, 'lax $.d[0].x[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_dot;
- id | x  | expected 
-----+----+----------
-  1 |    | 
-  2 |    | 
-  3 |    | 
-  4 | 12 | 12
-  5 |    | 
- 61 |    | 
- 62 |    | 
- 63 |    | 
- 64 |    | 
- 65 |    | 
- 66 |    | 
- 67 |    | 
-  7 |    | 
-  8 |    | 
-  9 |    | 
- 10 |    | 
- 11 |    | 
-(17 rows)
-
--- complex type with domain over json
-create domain json_d as json;
-create type comp_jsond as (f1 int, f2 json_d);
-create table test_json_domain_dot(id serial primary key, compjd comp_jsond);
-insert into test_json_domain_dot (compjd) values (ROW(1, '{"a": 3, "key1": {"c": "42"}, "key2": [11, 12]}'));
-insert into test_json_domain_dot (compjd) values (ROW(2, '{"a": 3, "key1": {"c": "42"}, "key2": [11, 12, {"x": [31, 42]}]}'));
-insert into test_json_domain_dot (compjd) values (ROW(3, '[{"a": 3}, {"key1": {"c": "42"}}, {"key2": [11, 12]}]'));
---object access
-select id, (compjd).f2.key1.c, json_query((compjd).f2, 'lax $.key1.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
- id |  c   | expected 
-----+------+----------
-  1 | "42" | "42"
-  2 | "42" | "42"
-  3 | "42" | "42"
-(3 rows)
-
-select id, (compjd).f2.key2, json_query((compjd).f2, 'lax $.key2' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
- id |           key2            |         expected          
-----+---------------------------+---------------------------
-  1 | [11, 12]                  | [11, 12]
-  2 | [11, 12, {"x": [31, 42]}] | [11, 12, {"x": [31, 42]}]
-  3 | [11, 12]                  | [11, 12]
-(3 rows)
-
-select id, (compjd).f2.key2[0], json_query((compjd).f2, 'lax $.key2[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
- id | key2 | expected 
-----+------+----------
-  1 | 11   | 11
-  2 | 11   | 11
-  3 | 11   | 11
-(3 rows)
-
-select id, (compjd).f2.key2[0::text] from test_json_domain_dot;
-ERROR:  json subscript must be coercible to integer
-LINE 1: select id, (compjd).f2.key2[0::text] from test_json_domain_d...
-                                    ^
-select json_query((compjd).f2, 'lax $.key2[0::text]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) from test_json_domain_dot;
-ERROR:  syntax error at or near ":" of jsonpath input
-LINE 1: select json_query((compjd).f2, 'lax $.key2[0::text]' WITH CO...
-                                       ^
-select id, (test_json_domain_dot.compjd).f2.key2[2].x[1], json_query((compjd).f2, 'lax $.key2[2].x[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
- id | x  | expected 
-----+----+----------
-  1 |    | 
-  2 | 42 | 42
-  3 |    | 
-(3 rows)
-
--- array access
-select id, (compjd).f2[0], json_query((compjd).f2, 'lax $[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_json_domain_dot;
- id |    f2    |                             expected                             
-----+----------+------------------------------------------------------------------
-  1 |          | {"a": 3, "key1": {"c": "42"}, "key2": [11, 12]}
-  2 |          | {"a": 3, "key1": {"c": "42"}, "key2": [11, 12, {"x": [31, 42]}]}
-  3 | {"a": 3} | {"a": 3}
-(3 rows)
-
-select id, (test_json_domain_dot.compjd).f2[0:] from test_json_domain_dot;
-ERROR:  json subscript does not support slices
-LINE 1: select id, (test_json_domain_dot.compjd).f2[0:] from test_js...
-                    ^
-drop table test_json_domain_dot cascade;
-drop type comp_jsond cascade;
-drop domain json_d cascade;
--- nested domains over json
-CREATE DOMAIN json_with_name AS json
-    CHECK (
-        -- check that JSON has a "name" field and that it is a string
-        json_typeof(VALUE->'name') = 'string'
-    );
-CREATE DOMAIN json_with_name_and_email AS json_with_name
-    CHECK (
-        -- ensure that if "email" exists, it follows a simple email format
-        VALUE->'email' IS NULL OR (VALUE->>'email' ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
-        );
-CREATE DOMAIN json_user_profile AS json_with_name_and_email
-    CHECK (
-        -- ensure that if "phone" exists, it follows a basic phone format
-        VALUE->'phone' IS NULL OR (VALUE->>'phone' ~ '^\+\d{1,3}-\d{3}-\d{3}-\d{4}$')
-        );
-CREATE TABLE json_users (id SERIAL PRIMARY KEY, profile json_user_profile);
-INSERT INTO json_users (profile) VALUES ('{"name": "Alice", "email": "alice@example.com", "phone": "+1-123-456-7890"}');
-INSERT INTO json_users (profile) VALUES ('{"name": "Bob", "email": "bob@example.com", "phone": "+9-876-543-3210", "address": [123, "1st street", "New York", "New York", 12345]}');
-SELECT id, (json_users.profile).name from json_users;
- id |  name   
-----+---------
-  1 | "Alice"
-  2 | "Bob"
-(2 rows)
-
-SELECT id, (json_users.profile).email from json_users;
- id |        email        
-----+---------------------
-  1 | "alice@example.com"
-  2 | "bob@example.com"
-(2 rows)
-
-SELECT id, (json_users.profile).phone from json_users;
- id |       phone       
-----+-------------------
-  1 | "+1-123-456-7890"
-  2 | "+9-876-543-3210"
-(2 rows)
-
-SELECT id, (json_users.profile).address from json_users;
- id |                      address                       
-----+----------------------------------------------------
-  1 | 
-  2 | [123, "1st street", "New York", "New York", 12345]
-(2 rows)
-
-SELECT id, (json_users.profile).address[3] from json_users;
- id |  address   
-----+------------
-  1 | 
-  2 | "New York"
-(2 rows)
-
--- array of nested domains over json
-CREATE TABLE json_user_arrs (id SERIAL PRIMARY KEY, profiles json_user_profile[]);
-INSERT INTO json_user_arrs (profiles) VALUES (ARRAY['{"name": "Alice", "email": "alice@example.com", "phone": "+1-123-456-7890"}'::json_user_profile, '{"name": "Bob", "email": "bob@example.com", "phone": "+9-876-543-3210", "address": [123, "1st street", "New York", "New York", 12345]}'::json_user_profile]);
-SELECT id, json_user_arrs.profiles[1] from json_user_arrs;
- id |                                  profiles                                   
-----+-----------------------------------------------------------------------------
-  1 | {"name": "Alice", "email": "alice@example.com", "phone": "+1-123-456-7890"}
+    -- Execute the dynamic query, substituting p_col as parameter #1
+    RETURN QUERY EXECUTE dyn_sql USING vep;
+END;
+$$;
+-- access member object field of a json object
+select * from test_json_dot_notation('{"a": 1, "b": 42}'::json, 'b');
+ dot_access | expected 
+------------+----------
+ 42         | 42
 (1 row)
 
-SELECT id, json_user_arrs.profiles[2] from json_user_arrs;
- id |                                                                profiles                                                                
-----+----------------------------------------------------------------------------------------------------------------------------------------
-  1 | {"name": "Bob", "email": "bob@example.com", "phone": "+9-876-543-3210", "address": [123, "1st street", "New York", "New York", 12345]}
+select * from test_json_dot_notation('{"a": 1, "b": 42}'::json, 'not_exist');
+ dot_access | expected 
+------------+----------
+            | 
 (1 row)
 
-SELECT id, json_user_arrs.profiles[2].address[0] from json_user_arrs;
- id | address 
-----+---------
-  1 | 123
+select * from test_json_dot_notation('{"a": 1, "b": 42, "b":12}'::json, 'b'); -- return last for duplicate key
+ dot_access | expected 
+------------+----------
+ 12         | 12
 (1 row)
 
-drop table json_users;
-drop table json_user_arrs;
-drop domain json_user_profile;
-drop domain json_with_name_and_email;
-drop domain json_with_name;
+select * from test_json_dot_notation('{"a": 1, "b": 12, "b":42}'::json, 'b');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_json_dot_notation('{"a": 2, "b": {"c": 42}}'::json, 'b.c');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_json_dot_notation('{"a": 4, "b": {"c": {"d": [11, 12]}}}'::json, 'b.c.d');
+ dot_access | expected 
+------------+----------
+ [11, 12]   | [11, 12]
+(1 row)
+
+-- access member object field of a json array: apply lax mode + conditional wrap
+-- unwrap the outer-most array into sequence and conditional wrap the results
+-- only unwrap the outer most array
+select * from test_json_dot_notation('[{"x": 42}]'::json, 'x');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_json_dot_notation('["x"]'::json, 'x');
+ dot_access | expected 
+------------+----------
+            | 
+(1 row)
+
+select * from test_json_dot_notation('[[{"x": 42}]]'::json, 'x');
+ dot_access | expected 
+------------+----------
+            | 
+(1 row)
+
+-- wrap the result into an array on the conditional of more than one matched object keys
+select * from test_json_dot_notation('[{"x": 42}, {"x": {"y": {"z": 12}}}]'::json, 'x');
+       dot_access       |        expected        
+------------------------+------------------------
+ [42, {"y": {"z": 12}}] | [42, {"y": {"z": 12}}]
+(1 row)
+
+select * from test_json_dot_notation('[{"x": 42}, [{"x": {"y": {"z": 12}}}]]'::json, 'x');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_json_dot_notation('[{"x": 42}, {"x": [{"y": 12}, {"y": {"z": 12}}]}]'::json, 'x.y');
+   dot_access    |    expected     
+-----------------+-----------------
+ [12, {"z": 12}] | [12, {"z": 12}]
+(1 row)
+

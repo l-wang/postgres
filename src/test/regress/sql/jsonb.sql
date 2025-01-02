@@ -1561,95 +1561,48 @@ select '12345.0000000000000000000000000000000000000000000005'::jsonb::int4;
 select '12345.0000000000000000000000000000000000000000000005'::jsonb::int8;
 
 -- simple dot notation
-create table test_jsonb_dot(id serial primary key , test_jsonb jsonb);
-insert into test_jsonb_dot values (1, '{"a": 1, "b": 42}');
-insert into test_jsonb_dot values (2, '{"a": 2, "b": {"c": 42}}');
-insert into test_jsonb_dot values (3, '{"a": 3, "b": {"c": "42"}, "d":[11, 12]}');
-insert into test_jsonb_dot values (4, '{"a": 3, "b": {"c": "42"}, "d":[{"x": [11, 12]}, {"y": [21, 22]}]}');
-insert into test_jsonb_dot values (5, '[{"a": 1, "b": 42}, {"a": 2, "b": {"c": 42}}]');
+-- TODO: add comments
 
--- member object access
-select id, (test_jsonb).b, json_query(test_jsonb, 'lax $.b' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
-select id, (test_jsonb).b.c, json_query(test_jsonb, 'lax $.b.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
-select id, (test_jsonb).d, json_query(test_jsonb, 'lax $.d' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
-select id, (test_jsonb)."d", json_query(test_jsonb, 'lax $."d"' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
-select id, (test_jsonb).'d' from test_jsonb_dot;
-select id, (test_jsonb)['d'] from test_jsonb_dot;
+CREATE OR REPLACE FUNCTION test_jsonb_dot_notation(
+    vep jsonb, -- value expression primary
+    jc  text -- JSON simplified accessor operator chain
+)
+    RETURNS TABLE(dot_access jsonb, expected jsonb)
+    LANGUAGE plpgsql
+AS $$
+DECLARE
+    dyn_sql text;
+BEGIN
+    dyn_sql := format($f$
+    SELECT
+       (vep).%s AS dot_access,
+       json_query(vep, 'lax $.%s' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) AS expected
+    FROM (SELECT $1::jsonb AS vep) dummy
+  $f$, jc, jc);
 
--- wildcard access is not supported
-select (test_jsonb_dot.test_jsonb).* from test_jsonb_dot;
+    --     -- OPTIONAL: Just to see the constructed SQL in logs
+--     RAISE NOTICE 'Executing: %', dyn_sql;
 
--- array element access
-select id, (test_jsonb_dot.test_jsonb).d[0], json_query(test_jsonb, 'lax $.d[0]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
-select id, (test_jsonb_dot.test_jsonb).d[1], json_query(test_jsonb, 'lax $.d[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
+    -- Execute the dynamic query, substituting p_col as parameter #1
+    RETURN QUERY EXECUTE dyn_sql USING vep;
+END;
+$$;
 
-select id, (test_jsonb_dot.test_jsonb).d[0:] from test_jsonb_dot;
-select id, json_query(test_jsonb, 'lax $.d[0:]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) from test_jsonb_dot;
+-- access member object field of a json object
+select * from test_jsonb_dot_notation('{"a": 1, "b": 42}'::jsonb, 'b');
+select * from test_jsonb_dot_notation('{"a": 1, "b": 42}'::jsonb, 'not_exist');
+select * from test_jsonb_dot_notation('{"a": 1, "b": 42, "b":12}'::jsonb, 'b'); -- return last for duplicate key
+select * from test_jsonb_dot_notation('{"a": 1, "b": 12, "b":42}'::jsonb, 'b');
+select * from test_jsonb_dot_notation('{"a": 2, "b": {"c": 42}}'::jsonb, 'b.c');
+select * from test_jsonb_dot_notation('{"a": 4, "b": {"c": {"d": [11, 12]}}}'::jsonb, 'b.c.d');
 
-select id, (test_jsonb_dot.test_jsonb).d[0::int] from test_jsonb_dot;
-select id, json_query(test_jsonb, 'lax $.d[0::int]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) from test_jsonb_dot;
-select id, (test_jsonb_dot.test_jsonb).d[0::float] from test_jsonb_dot;
-
-select id, (test_jsonb_dot.test_jsonb).d[0].x[1], json_query(test_jsonb, 'lax $.d[0].x[1]' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_dot;
-
--- complex type with domain over jsonb
-create domain jsonb_d as jsonb;
-create type comp_jsonbd as (f1 int, f2 jsonb_d);
-create table test_jsonb_domain_dot(id serial primary key, compjd comp_jsonbd);
-insert into test_jsonb_domain_dot (compjd) values (ROW(1, '{"a": 3, "key1": {"c": "42"}, "key2": [11, 12]}'));
-insert into test_jsonb_domain_dot (compjd) values (ROW(2, '{"a": 3, "key1": {"c": "42"}, "key2": [11, 12, {"x": [31, 42]}]}'));
-insert into test_jsonb_domain_dot (compjd) values (ROW(3, '[{"a": 3}, {"key1": {"c": "42"}}, {"key2": [11, 12]}]'));
-
--- object access
-select id, (compjd).f2.key1.c, json_query((compjd).f2, 'lax $.key1.c' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) as expected from test_jsonb_domain_dot;
-select id, (test_jsonb_domain_dot.compjd).f2.key2 from test_jsonb_domain_dot;
-select id, (test_jsonb_domain_dot.compjd).f2.key2[0] from test_jsonb_domain_dot;
-select id, (test_jsonb_domain_dot.compjd).f2.key2[0::text] from test_jsonb_domain_dot;
-select id, (test_jsonb_domain_dot.compjd).f2.key2[2].x[1] from test_jsonb_domain_dot;
--- array access
-select id, (test_jsonb_domain_dot.compjd).f2[0] from test_jsonb_domain_dot;
-select id, (test_jsonb_domain_dot.compjd).f2[0:] from test_jsonb_domain_dot;
-
-drop table test_jsonb_domain_dot cascade;
-drop type comp_jsonbd cascade;
-drop domain jsonb_d cascade;
-
--- nested domains over jsonb
-CREATE DOMAIN jsonb_with_name AS JSONB
-    CHECK (
-        -- check that JSON has a "name" field and that it is a string
-        VALUE ? 'name' AND jsonb_typeof(VALUE->'name') = 'string'
-        );
-CREATE DOMAIN jsonb_with_name_and_email AS jsonb_with_name
-    CHECK (
-        -- ensure that if "email" exists, it follows a simple email format
-        NOT VALUE ? 'email' OR (VALUE->>'email' ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
-        );
-CREATE DOMAIN jsonb_user_profile AS jsonb_with_name_and_email
-    CHECK (
-        -- ensure that if "phone" exists, it follows a basic phone format
-        NOT VALUE ? 'phone' OR (VALUE->>'phone' ~ '^\+\d{1,3}-\d{3}-\d{3}-\d{4}$')
-        );
-CREATE TABLE jsonb_users (id SERIAL PRIMARY KEY, profile jsonb_user_profile);
-INSERT INTO jsonb_users (profile) VALUES ('{"name": "Alice", "email": "alice@example.com", "phone": "+1-123-456-7890"}');
-INSERT INTO jsonb_users (profile) VALUES ('{"name": "Bob", "email": "bob@example.com", "phone": "+9-876-543-3210", "address": [123, "1st street", "New York", "New York", 12345]}');
-
-SELECT id, (jsonb_users.profile).name from jsonb_users;
-SELECT id, (jsonb_users.profile).email from jsonb_users;
-SELECT id, (jsonb_users.profile).phone from jsonb_users;
-SELECT id, (jsonb_users.profile).address from jsonb_users;
-SELECT id, (jsonb_users.profile).address[3] from jsonb_users;
-
--- array of nested domains over jsonb
-CREATE TABLE jsonb_user_arrs (id SERIAL PRIMARY KEY, profiles jsonb_user_profile[]);
-INSERT INTO jsonb_user_arrs (profiles) VALUES (ARRAY['{"name": "Alice", "email": "alice@example.com", "phone": "+1-123-456-7890"}'::jsonb_user_profile, '{"name": "Bob", "email": "bob@example.com", "phone": "+9-876-543-3210", "address": [123, "1st street", "New York", "New York", 12345]}'::jsonb_user_profile]);
-
-SELECT id, jsonb_user_arrs.profiles[1] from jsonb_user_arrs;
-SELECT id, jsonb_user_arrs.profiles[2] from jsonb_user_arrs;
-SELECT id, jsonb_user_arrs.profiles[2].address[0] from jsonb_user_arrs;
-
-drop table jsonb_users;
-drop table jsonb_user_arrs;
-drop domain jsonb_user_profile;
-drop domain jsonb_with_name_and_email;
-drop domain jsonb_with_name;
+-- access member object field of a json array: apply lax mode + conditional wrap
+-- unwrap the outer-most array into sequence and conditional wrap the results
+-- only unwrap the outer most array
+select * from test_jsonb_dot_notation('[{"x": 42}]'::jsonb, 'x');
+select * from test_jsonb_dot_notation('["x"]'::jsonb, 'x');
+select * from test_jsonb_dot_notation('[[{"x": 42}]]'::jsonb, 'x');
+-- wrap the result into an array on the conditional of more than one matched object keys
+select * from test_jsonb_dot_notation('[{"x": 42}, {"x": {"y": {"z": 12}}}]'::jsonb, 'x');
+select * from test_jsonb_dot_notation('[{"x": 42}, [{"x": {"y": {"z": 12}}}]]'::jsonb, 'x');
+select * from test_jsonb_dot_notation('[{"x": 42}, {"x": [{"y": 12}, {"y": {"z": 12}}]}]'::jsonb, 'x.y');
