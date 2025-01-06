@@ -5784,7 +5784,7 @@ select * from test_jsonb_dot_notation('{"a": 4, "b": {"c": {"d": [11, 12]}}}'::j
 select * from test_jsonb_dot_notation('[{"x": 42}]'::jsonb, 'x');
  dot_access | expected 
 ------------+----------
-            | 42
+ 42         | 42
 (1 row)
 
 select * from test_jsonb_dot_notation('["x"]'::jsonb, 'x');
@@ -5801,20 +5801,20 @@ select * from test_jsonb_dot_notation('[[{"x": 42}]]'::jsonb, 'x');
 
 -- wrap the result into an array on the conditional of more than one matched object keys
 select * from test_jsonb_dot_notation('[{"x": 42}, {"x": {"y": {"z": 12}}}]'::jsonb, 'x');
- dot_access |        expected        
-------------+------------------------
-            | [42, {"y": {"z": 12}}]
+       dot_access       |        expected        
+------------------------+------------------------
+ [42, {"y": {"z": 12}}] | [42, {"y": {"z": 12}}]
 (1 row)
 
 select * from test_jsonb_dot_notation('[{"x": 42}, [{"x": {"y": {"z": 12}}}]]'::jsonb, 'x');
  dot_access | expected 
 ------------+----------
-            | 42
+ 42         | 42
 (1 row)
 
 select * from test_jsonb_dot_notation('[{"x": 42}, {"x": [{"y": 12}, {"y": {"z": 12}}]}]'::jsonb, 'x.y');
- dot_access |    expected     
-------------+-----------------
-            | [12, {"z": 12}]
+   dot_access    |    expected     
+-----------------+-----------------
+ [12, {"z": 12}] | [12, {"z": 12}]
 (1 row)
 

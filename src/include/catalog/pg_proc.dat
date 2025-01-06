@@ -9317,6 +9317,10 @@
   proname => 'json_object_field_dot', prorettype => 'json',
   proargtypes => 'json text bool bool', proargnames => '{from_json, field_name, first_op, last_op}',
   prosrc => 'json_object_field_dot' },
+{ oid => '4100',
+  proname => 'jsonb_object_field_dot', prorettype => 'jsonb',
+  proargtypes => 'jsonb text bool bool', proargnames => '{from_json, field_name, first_op, last_op}',
+  prosrc => 'jsonb_object_field_dot' },
 
 # uuid
 { oid => '2952', descr => 'I/O',

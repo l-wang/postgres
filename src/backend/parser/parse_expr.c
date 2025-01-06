@@ -500,11 +500,16 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 			result_basetypid = (result_typid == JSONOID || result_typid == JSONBOID) ?
 				result_typid : getBaseType(result_typid);
 
-			if (result_basetypid == JSONBOID) // TODO
+			if (result_basetypid == JSONBOID)
+			{
+				json_accessor_chain_first = (i == list_head(ind->indirection));
+				if (lnext(ind->indirection, i) == NULL)
+					json_accessor_chain_last = true;
 				newresult = ParseJsonbSimplifiedAccessorObjectField(pstate,
-																   strVal(n),
-																   result,
-																   location, result_basetypid);
+																	strVal(n),
+																	result,
+																	location, result_basetypid, json_accessor_chain_first, json_accessor_chain_last);
+			}
 			else if (result_basetypid == JSONOID)
 			{
 				json_accessor_chain_first = (i == list_head(ind->indirection));
