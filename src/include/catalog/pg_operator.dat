@@ -3172,7 +3172,7 @@
 { oid => '3967', descr => 'get value from json as text with path elements',
   oprname => '#>>', oprleft => 'json', oprright => '_text', oprresult => 'text',
   oprcode => 'json_extract_path_text' },
-{ oid => '3211', descr => 'get jsonb object field',
+{ oid => '3211', oid_symbol => 'OID_JSONB_OBJECT_FIELD_OP', descr => 'get jsonb object field',
   oprname => '->', oprleft => 'jsonb', oprright => 'text', oprresult => 'jsonb',
   oprcode => 'jsonb_object_field' },
 { oid => '3477', descr => 'get jsonb object field as text',

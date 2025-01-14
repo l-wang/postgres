@@ -879,6 +879,242 @@ jsonb_object_field(PG_FUNCTION_ARGS)
 	PG_RETURN_NULL();
 }
 
+static void
+expand_jbvBinary_in_memory(const JsonbValue *binaryVal, JsonbValue *expandedVal)
+{
+	Assert(binaryVal->type == jbvBinary);
+	JsonbContainer    *container = (JsonbContainer *) binaryVal->val.binary.data;
+	JsonbIterator     *it;
+	JsonbValue         v;
+	JsonbIteratorToken token;
+
+	it = JsonbIteratorInit(container);
+	token = JsonbIteratorNext(&it, &v, false);
+
+	if (token == WJB_BEGIN_OBJECT)
+	{
+		/*
+		 * We'll read all keys/values until WJB_END_OBJECT
+		 * and build expandedVal->type = jbvObject.
+		 */
+		List *keyvals = NIL;
+
+		while ((token = JsonbIteratorNext(&it, &v, false)) != WJB_END_OBJECT)
+		{
+			if (token == WJB_KEY)
+			{
+				JsonbValue key;
+
+				key= v;
+				token = JsonbIteratorNext(&it, &v, true);
+				if (token == WJB_VALUE)
+				{
+					JsonbValue val;
+					JsonbValue *objPair;
+
+					if (v.type == jbvBinary)
+					{
+						/* Recursively expand nested objects/arrays. */
+						expand_jbvBinary_in_memory(&v, &val);
+					}
+					else
+					{
+						/* Scalar or already jbvObject/jbvArray. Copy as-is. */
+						val = v;
+					}
+
+					/* Build a small pair (key, value). We'll store them in a list. */
+					objPair = palloc(sizeof(JsonbValue) * 2);
+					objPair[0] = key;
+					objPair[1] = val;
+					keyvals = lappend(keyvals, objPair);
+				}
+			}
+		}
+
+		/* Now convert our keyvals list into a jbvObject. */
+		int nPairs = list_length(keyvals);
+		expandedVal->type = jbvObject;
+		expandedVal->val.object.nPairs = nPairs;
+		expandedVal->val.object.pairs = palloc(sizeof(JsonbPair) * nPairs);
+
+		{
+			int i = 0;
+			ListCell *lc;
+			foreach(lc, keyvals)
+			{
+				JsonbValue *kv = (JsonbValue *) lfirst(lc);
+				/* kv[0] = key, kv[1] = value */
+
+				expandedVal->val.object.pairs[i].key = kv[0];
+				expandedVal->val.object.pairs[i].value = kv[1];
+				expandedVal->val.object.pairs[i].order = i;
+				i++;
+			}
+		}
+	}
+	else if (token == WJB_BEGIN_ARRAY)
+	{
+		/*
+		 * We'll read array elems until WJB_END_ARRAY
+		 * and build expandedVal->type = jbvArray.
+		 */
+		List *elems = NIL;
+
+		while ((token = JsonbIteratorNext(&it, &v, true)) != WJB_END_ARRAY)
+		{
+			if (token == WJB_ELEM)
+			{
+				/* If it's jbvBinary, recursively expand again. */
+				JsonbValue val;
+				if (v.type == jbvBinary)
+				{
+					expand_jbvBinary_in_memory(&v, &val);
+				}
+				else
+				{
+					val = v;
+				}
+				JsonbValue *elemCopy = palloc(sizeof(JsonbValue));
+				*elemCopy = val;
+				elems = lappend(elems, elemCopy);
+			}
+		}
+
+		expandedVal->type = jbvArray;
+		expandedVal->val.array.nElems = list_length(elems);
+		expandedVal->val.array.rawScalar = false;
+		expandedVal->val.array.elems = palloc(sizeof(JsonbValue) * expandedVal->val.array.nElems);
+
+		{
+			int i = 0;
+			ListCell *lc;
+			foreach(lc, elems)
+			{
+				JsonbValue *vptr = (JsonbValue *) lfirst(lc);
+				expandedVal->val.array.elems[i++] = *vptr;
+			}
+		}
+	}
+	else
+	{
+		/*
+		 * Possibly a scalar container (WJB_ELEM or WJB_VALUE with jbvNumeric, jbvString, etc.).
+		 * If this container truly only has one scalar, token might be WJB_ELEM or similar.
+		 * For simplicity, let's check tmp.type. If it's jbvString/jbvNumeric, copy it directly.
+		 */
+		expandedVal->type = v.type;
+		expandedVal->val = v.val;
+	}
+}
+
+static List *
+jsonb_object_field_unwrap_array(JsonbContainer *jb, text *key, bool unwrap_nested)
+{
+	JsonbIterator	   *it;
+	JsonbValue			v;
+	JsonbIteratorToken	token;
+	List 			   *resultList = NIL;
+	int 				arraySize;
+
+	it = JsonbIteratorInit(jb);
+	token = JsonbIteratorNext(&it, &v, false);
+
+	Assert(token == WJB_BEGIN_ARRAY);
+	arraySize = v.val.array.nElems;
+
+	/* Unwrap out-most array elements and extract the key value */
+	for (int i = 0; i < arraySize; i++) {
+		token = JsonbIteratorNext(&it, &v, true);
+		if (token == WJB_ELEM && v.type == jbvBinary) {
+			JsonbContainer *elemContainer = (JsonbContainer *) v.val.binary.data;
+			if (JsonContainerIsObject(elemContainer)) {
+				JsonbValue *extractedValue;
+				JsonbValue vbuf;
+				extractedValue = getKeyJsonValueFromContainer(elemContainer,
+															  VARDATA_ANY(key),
+															  VARSIZE_ANY_EXHDR(key),
+															  &vbuf);
+				if (extractedValue != NULL) {
+					JsonbValue *copy;
+					if (extractedValue->type == jbvBinary) {
+						JsonbValue expanded;
+						expand_jbvBinary_in_memory(extractedValue, &expanded);
+
+						copy = palloc(sizeof(expanded));
+						*copy = expanded;
+						resultList = lappend(resultList, copy);
+					} else {
+						copy = palloc(sizeof(*extractedValue));
+						*copy = *extractedValue;
+						resultList = lappend(resultList, copy);
+					}
+				}
+			} else if (unwrap_nested && JsonContainerIsArray(elemContainer)) {
+				resultList = jsonb_object_field_unwrap_array(elemContainer, key, false);
+			}
+		}
+	}
+	token = JsonbIteratorNext(&it, &v, true);
+
+	return resultList;
+}
+
+Datum
+jsonb_object_field_dot(PG_FUNCTION_ARGS)
+{
+	Jsonb	   *jb = PG_GETARG_JSONB_P(0);
+	text	   *key = PG_GETARG_TEXT_PP(1);
+	bool		first_op = PG_GETARG_BOOL(2);
+	bool		last_op = PG_GETARG_BOOL(3);
+
+	if (JB_ROOT_IS_OBJECT(jb))
+	{
+		JsonbValue *v;
+		JsonbValue	vbuf;
+		v = getKeyJsonValueFromContainer(&jb->root,
+										 VARDATA_ANY(key),
+										 VARSIZE_ANY_EXHDR(key),
+										 &vbuf);
+
+		if (v != NULL)
+			PG_RETURN_JSONB_P(JsonbValueToJsonb(v));
+	}
+	else if (JB_ROOT_IS_ARRAY(jb))
+	{
+		List 		*resultList;
+		JsonbValue	 resultVal;
+
+		resultList = jsonb_object_field_unwrap_array(&jb->root, key, !first_op);
+
+		if (list_length(resultList) == 0)
+			PG_RETURN_NULL();
+		else if (!last_op || list_length(resultList) > 1)
+		{
+			/* Conditional wrap result */
+			resultVal.type = jbvArray;
+			resultVal.val.array.rawScalar = false;
+			resultVal.val.array.nElems = list_length(resultList);
+			resultVal.val.array.elems = (JsonbValue *)palloc(sizeof(JsonbValue) * list_length(resultList));
+
+			int idx = 0;
+			ListCell *lc;
+			JsonbValue *elem;
+			foreach(lc, resultList)
+			{
+				elem = (JsonbValue *)lfirst(lc);
+				resultVal.val.array.elems[idx++] = *elem;
+			}
+		}
+		else
+			resultVal = *(JsonbValue *)linitial(resultList);
+
+		PG_RETURN_JSONB_P(JsonbValueToJsonb(&resultVal));
+	}
+
+	PG_RETURN_NULL();
+}
+
 Datum
 json_object_field_text(PG_FUNCTION_ARGS)
 {

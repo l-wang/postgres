@@ -440,6 +440,8 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 	List	   *subscripts = NIL;
 	int			location = exprLocation(result);
 	ListCell   *i;
+	bool		json_accessor_chain_first = false;
+	bool		json_accessor_chain_last = false;
 
 	/*
 	 * We have to split any field-selection operations apart from
@@ -462,6 +464,8 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		else
 		{
 			Node	   *newresult;
+			Oid			result_typid;
+			Oid			result_basetypid;
 
 			Assert(IsA(n, String));
 
@@ -475,13 +479,28 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 															   false);
 			subscripts = NIL;
 
-			newresult = ParseFuncOrColumn(pstate,
-										  list_make1(n),
-										  list_make1(result),
-										  last_srf,
-										  NULL,
-										  false,
-										  location);
+			result_typid = exprType(result);
+			result_basetypid = (result_typid == JSONOID || result_typid == JSONBOID) ?
+				result_typid : getBaseType(result_typid);
+
+			if (result_basetypid == JSONBOID)
+			{
+				json_accessor_chain_first = (i == list_head(ind->indirection));
+				if (lnext(ind->indirection, i) == NULL)
+					json_accessor_chain_last = true;
+				newresult = ParseJsonbSimplifiedAccessorObjectField(pstate,
+																	strVal(n),
+																	result,
+																	location, result_basetypid, json_accessor_chain_first, json_accessor_chain_last);
+			}
+			else
+				newresult = ParseFuncOrColumn(pstate,
+											  list_make1(n),
+											  list_make1(result),
+											  last_srf,
+											  NULL,
+											  false,
+											  location);
 			if (newresult == NULL)
 				unknown_attribute(pstate, result, strVal(n), location);
 			result = newresult;

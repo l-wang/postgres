@@ -5715,3 +5715,106 @@ select '12345.0000000000000000000000000000000000000000000005'::jsonb::int8;
  12345
 (1 row)
 
+-- simple dot notation
+-- TODO: add comments
+CREATE OR REPLACE FUNCTION test_jsonb_dot_notation(
+    vep jsonb, -- value expression primary
+    jc  text -- JSON simplified accessor operator chain
+)
+    RETURNS TABLE(dot_access jsonb, expected jsonb)
+    LANGUAGE plpgsql
+AS $$
+DECLARE
+    dyn_sql text;
+BEGIN
+    dyn_sql := format($f$
+    SELECT
+       (vep).%s AS dot_access,
+       json_query(vep, 'lax $.%s' WITH CONDITIONAL WRAPPER NULL ON EMPTY NULL ON ERROR) AS expected
+    FROM (SELECT $1::jsonb AS vep) dummy
+  $f$, jc, jc);
+
+    --     -- OPTIONAL: Just to see the constructed SQL in logs
+--     RAISE NOTICE 'Executing: %', dyn_sql;
+
+    -- Execute the dynamic query, substituting p_col as parameter #1
+    RETURN QUERY EXECUTE dyn_sql USING vep;
+END;
+$$;
+-- access member object field of a json object
+select * from test_jsonb_dot_notation('{"a": 1, "b": 42}'::jsonb, 'b');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_jsonb_dot_notation('{"a": 1, "b": 42}'::jsonb, 'not_exist');
+ dot_access | expected 
+------------+----------
+            | 
+(1 row)
+
+select * from test_jsonb_dot_notation('{"a": 1, "b": 42, "b":12}'::jsonb, 'b'); -- return last for duplicate key
+ dot_access | expected 
+------------+----------
+ 12         | 12
+(1 row)
+
+select * from test_jsonb_dot_notation('{"a": 1, "b": 12, "b":42}'::jsonb, 'b');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_jsonb_dot_notation('{"a": 2, "b": {"c": 42}}'::jsonb, 'b.c');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_jsonb_dot_notation('{"a": 4, "b": {"c": {"d": [11, 12]}}}'::jsonb, 'b.c.d');
+ dot_access | expected 
+------------+----------
+ [11, 12]   | [11, 12]
+(1 row)
+
+-- access member object field of a json array: apply lax mode + conditional wrap
+-- unwrap the outer-most array into sequence and conditional wrap the results
+-- only unwrap the outer most array
+select * from test_jsonb_dot_notation('[{"x": 42}]'::jsonb, 'x');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_jsonb_dot_notation('["x"]'::jsonb, 'x');
+ dot_access | expected 
+------------+----------
+            | 
+(1 row)
+
+select * from test_jsonb_dot_notation('[[{"x": 42}]]'::jsonb, 'x');
+ dot_access | expected 
+------------+----------
+            | 
+(1 row)
+
+-- wrap the result into an array on the conditional of more than one matched object keys
+select * from test_jsonb_dot_notation('[{"x": 42}, {"x": {"y": {"z": 12}}}]'::jsonb, 'x');
+       dot_access       |        expected        
+------------------------+------------------------
+ [42, {"y": {"z": 12}}] | [42, {"y": {"z": 12}}]
+(1 row)
+
+select * from test_jsonb_dot_notation('[{"x": 42}, [{"x": {"y": {"z": 12}}}]]'::jsonb, 'x');
+ dot_access | expected 
+------------+----------
+ 42         | 42
+(1 row)
+
+select * from test_jsonb_dot_notation('[{"x": 42}, {"x": [{"y": 12}, {"y": {"z": 12}}]}]'::jsonb, 'x.y');
+   dot_access    |    expected     
+-----------------+-----------------
+ [12, {"z": 12}] | [12, {"z": 12}]
+(1 row)
+

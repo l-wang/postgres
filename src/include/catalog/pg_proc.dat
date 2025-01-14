@@ -9313,6 +9313,10 @@
 { oid => '3968', descr => 'get the type of a json value',
   proname => 'json_typeof', prorettype => 'text', proargtypes => 'json',
   prosrc => 'json_typeof' },
+{ oid => '4100',
+  proname => 'jsonb_object_field_dot', prorettype => 'jsonb',
+  proargtypes => 'jsonb text bool bool', proargnames => '{from_json, field_name, first_op, last_op}',
+  prosrc => 'jsonb_object_field_dot' },
 
 # uuid
 { oid => '2952', descr => 'I/O',
