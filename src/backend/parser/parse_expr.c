@@ -74,7 +74,6 @@ static Node *transformColumnRef(ParseState *pstate, ColumnRef *cref);
 static Node *transformWholeRowRef(ParseState *pstate,
 								  ParseNamespaceItem *nsitem,
 								  int sublevels_up, int location);
-static Node *transformIndirection(ParseState *pstate, A_Indirection *ind);
 static Node *transformTypeCast(ParseState *pstate, TypeCast *tc);
 static Node *transformCollateClause(ParseState *pstate, CollateClause *c);
 static Node *transformJsonObjectConstructor(ParseState *pstate,
@@ -158,7 +157,7 @@ transformExprRecurse(ParseState *pstate, Node *expr)
 			break;
 
 		case T_A_Indirection:
-			result = transformIndirection(pstate, (A_Indirection *) expr);
+			result = transformIndirection(pstate, (A_Indirection *) expr, NULL);
 			break;
 
 		case T_A_ArrayExpr:
@@ -432,8 +431,9 @@ unknown_attribute(ParseState *pstate, Node *relref, const char *attname,
 	}
 }
 
-static Node *
-transformIndirection(ParseState *pstate, A_Indirection *ind)
+Node *
+transformIndirection(ParseState *pstate, A_Indirection *ind,
+					 bool *trailing_star_expansion)
 {
 	Node	   *last_srf = pstate->p_last_srf;
 	Node	   *result = transformExprRecurse(pstate, ind->arg);
@@ -453,28 +453,57 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 		if (IsA(n, A_Indices))
 			subscripts = lappend(subscripts, n);
 		else if (IsA(n, A_Star))
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("row expansion via \"*\" is not supported here"),
-					 parser_errposition(pstate, location)));
-		}
+			subscripts = lappend(subscripts, n);
 		else
 		{
-			Node	   *newresult;
-
 			Assert(IsA(n, String));
+			subscripts = lappend(subscripts, n);
+		}
+	}
 
-			/* process subscripts before this field selection */
-			if (subscripts)
-				result = (Node *) transformContainerSubscripts(pstate,
-															   result,
-															   exprType(result),
-															   exprTypmod(result),
-															   subscripts,
-															   false);
-			subscripts = NIL;
+	/* process trailing subscripts, if any */
+	while (subscripts)
+	{
+		Node	   *newresult = (Node *)
+			transformContainerSubscripts(pstate,
+										 result,
+										 exprType(result),
+										 exprTypmod(result),
+										 &subscripts,
+										 false,
+										 true);
 
+		if (!newresult)
+		{
+			/* generic subscripting failed */
+			Node	   *n;
+
+			Assert(subscripts);
+
+			n = linitial(subscripts);
+
+			if (IsA(n, A_Star))
+			{
+				/* Success, if trailing star expansion is allowed */
+				if (trailing_star_expansion && list_length(subscripts) == 1)
+				{
+					*trailing_star_expansion = true;
+					return result;
+				}
+
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("row expansion via \"*\" is not supported here"),
+						 parser_errposition(pstate, location)));
+			}
+			else if (!IsA(n, String))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("cannot subscript type %s because it does not support subscripting",
+								format_type_be(exprType(result))),
+						 parser_errposition(pstate, exprLocation(result))));
+
+			/* try to find function for field selection */
 			newresult = ParseFuncOrColumn(pstate,
 										  list_make1(n),
 										  list_make1(result),
@@ -482,19 +511,19 @@ transformIndirection(ParseState *pstate, A_Indirection *ind)
 										  NULL,
 										  false,
 										  location);
-			if (newresult == NULL)
+
+			if (!newresult)
 				unknown_attribute(pstate, result, strVal(n), location);
-			result = newresult;
+
+			/* consume field select */
+			subscripts = list_delete_first(subscripts);
 		}
+
+		result = newresult;
 	}
-	/* process trailing subscripts, if any */
-	if (subscripts)
-		result = (Node *) transformContainerSubscripts(pstate,
-													   result,
-													   exprType(result),
-													   exprTypmod(result),
-													   subscripts,
-													   false);
+
+	if (trailing_star_expansion)
+		*trailing_star_expansion = false;
 
 	return result;
 }

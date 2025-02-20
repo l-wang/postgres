@@ -93,7 +93,7 @@ struct SubscriptExecSteps;
  * assignment must return.
  */
 typedef void (*SubscriptTransform) (SubscriptingRef *sbsref,
-									List *indirection,
+									List **indirection,
 									struct ParseState *pstate,
 									bool isSlice,
 									bool isAssignment);

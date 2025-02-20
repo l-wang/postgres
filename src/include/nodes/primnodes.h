@@ -718,6 +718,8 @@ typedef struct SubscriptingRef
 	Expr	   *refexpr;
 	/* expression for the source value, or NULL if fetch */
 	Expr	   *refassgnexpr;
+	/* private expression */
+	Node	   *refprivate;
 } SubscriptingRef;
 
 /*
