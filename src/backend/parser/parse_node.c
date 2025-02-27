@@ -244,14 +244,16 @@ transformContainerSubscripts(ParseState *pstate,
 							 Node *containerBase,
 							 Oid containerType,
 							 int32 containerTypMod,
-							 List *indirection,
-							 bool isAssignment)
+							 List **indirection,
+							 bool isAssignment,
+							 bool noError)
 {
 	SubscriptingRef *sbsref;
 	const SubscriptRoutines *sbsroutines;
 	Oid			elementType;
 	bool		isSlice = false;
 	ListCell   *idx;
+	int			indirection_length = list_length(*indirection);
 
 	/*
 	 * Determine the actual container type, smashing any domain.  In the
@@ -267,11 +269,16 @@ transformContainerSubscripts(ParseState *pstate,
 	 */
 	sbsroutines = getSubscriptingRoutines(containerType, &elementType);
 	if (!sbsroutines)
+	{
+		if (noError)
+			return NULL;
+
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("cannot subscript type %s because it does not support subscripting",
 						format_type_be(containerType)),
 				 parser_errposition(pstate, exprLocation(containerBase))));
+	}
 
 	/*
 	 * Detect whether any of the indirection items are slice specifiers.
@@ -280,11 +287,11 @@ transformContainerSubscripts(ParseState *pstate,
 	 * element.  If any of the items are slice specifiers (lower:upper), then
 	 * the subscript expression means a container slice operation.
 	 */
-	foreach(idx, indirection)
+	foreach(idx, *indirection)
 	{
-		A_Indices  *ai = lfirst_node(A_Indices, idx);
+		Node	   *ai = lfirst(idx);
 
-		if (ai->is_slice)
+		if (IsA(ai, A_Indices) && castNode(A_Indices, ai)->is_slice)
 		{
 			isSlice = true;
 			break;
@@ -311,6 +318,32 @@ transformContainerSubscripts(ParseState *pstate,
 	 */
 	sbsroutines->transform(sbsref, indirection, pstate,
 						   isSlice, isAssignment);
+
+	/*
+	 * Error out, if datatyoe falied to consume any indirection elements.
+	 */
+	if (list_length(*indirection) == indirection_length)
+	{
+		Node	   *ind = linitial(*indirection);
+
+		if (noError)
+			return NULL;
+
+		if (IsA(ind, String))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("type %s does not support column notation",
+							format_type_be(containerType)),
+					 parser_errposition(pstate, exprLocation(containerBase))));
+		else if (IsA(ind, A_Indices))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("type %s does not support array subscripting",
+							format_type_be(containerType)),
+					 parser_errposition(pstate, exprLocation(containerBase))));
+		else
+			elog(ERROR, "invalid indirection operation: %d", nodeTag(ind));
+	}
 
 	/*
 	 * Verify we got a valid type (this defends, for example, against someone
