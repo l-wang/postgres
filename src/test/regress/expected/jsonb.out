@@ -5982,31 +5982,31 @@ SELECT (jb).a.b.c FROM test_jsonb_dot_notation;
 
 /* wild card member access */
 SELECT (jb).a.* FROM test_jsonb_dot_notation;
-                     a                     
+                 ?column?                  
 -------------------------------------------
  ["c", "d", "f", {"y": "yyy", "z": "zzz"}]
 (1 row)
 
 SELECT (jb).* FROM test_jsonb_dot_notation;
-                                                              jb                                                              
+                                                           ?column?                                                           
 ------------------------------------------------------------------------------------------------------------------------------
  [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
 (1 row)
 
 SELECT (jb).* FROM test_jsonb_dot_notation t;
-                                                              jb                                                              
+                                                           ?column?                                                           
 ------------------------------------------------------------------------------------------------------------------------------
  [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
 (1 row)
 
 SELECT (t.jb).* FROM test_jsonb_dot_notation t;
-                                                              jb                                                              
+                                                           ?column?                                                           
 ------------------------------------------------------------------------------------------------------------------------------
  [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
 (1 row)
 
 SELECT (jb).* FROM test_jsonb_dot_notation;
-                                                              jb                                                              
+                                                           ?column?                                                           
 ------------------------------------------------------------------------------------------------------------------------------
  [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
 (1 row)
@@ -6016,13 +6016,13 @@ ERROR:  missing FROM-clause entry for table "t"
 LINE 1: SELECT (t.jb).* FROM test_jsonb_dot_notation;
                 ^
 SELECT (t.jb).* FROM test_jsonb_dot_notation t;
-                                                              jb                                                              
+                                                           ?column?                                                           
 ------------------------------------------------------------------------------------------------------------------------------
  [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
 (1 row)
 
 SELECT (jb).a.* FROM test_jsonb_dot_notation;
-                     a                     
+                 ?column?                  
 -------------------------------------------
  ["c", "d", "f", {"y": "yyy", "z": "zzz"}]
 (1 row)
@@ -6046,7 +6046,7 @@ SELECT (jb).a.*.y FROM test_jsonb_dot_notation;
 (1 row)
 
 SELECT (jb).a.*.* FROM test_jsonb_dot_notation;
-       a        
+    ?column?    
 ----------------
  ["yyy", "zzz"]
 (1 row)
@@ -6088,7 +6088,7 @@ SELECT (jb).*.x FROM test_jsonb_dot_notation;
 (1 row)
 
 SELECT (jb).*.x.* FROM test_jsonb_dot_notation;
-              x               
+           ?column?           
 ------------------------------
  ["yyy", "zzz", "YYY", "ZZZ"]
 (1 row)
@@ -6112,20 +6112,20 @@ SELECT (jb).*.*.y FROM test_jsonb_dot_notation;
 (1 row)
 
 SELECT (jb).*.*.* FROM test_jsonb_dot_notation;
-              jb              
+           ?column?           
 ------------------------------
  ["yyy", "zzz", "YYY", "ZZZ"]
 (1 row)
 
 SELECT (jb).*.*.*.* FROM test_jsonb_dot_notation;
- jb 
-----
+ ?column? 
+----------
  
 (1 row)
 
 SELECT (jb).a.b.c.* FROM test_jsonb_dot_notation;
- c 
----
+ ?column? 
+----------
  
 (1 row)
 
@@ -6141,7 +6141,7 @@ EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).* FROM test_jsonb_dot_notation;
 (2 rows)
 
 SELECT (jb).* FROM test_jsonb_dot_notation;
-                                                              jb                                                              
+                                                           ?column?                                                           
 ------------------------------------------------------------------------------------------------------------------------------
  [[1, 2, {"b": "c"}, {"b": "d", "e": "f", "x": {"y": "yyy", "z": "zzz"}}], [3, 4, {"b": "g", "x": {"y": "YYY", "z": "ZZZ"}}]]
 (1 row)
@@ -6180,7 +6180,7 @@ EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).a.* FROM test_jsonb_dot_notation;
 (2 rows)
 
 SELECT (jb).a.* FROM test_jsonb_dot_notation;
-                     a                     
+                 ?column?                  
 -------------------------------------------
  ["c", "d", "f", {"y": "yyy", "z": "zzz"}]
 (1 row)

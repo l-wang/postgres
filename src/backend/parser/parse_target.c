@@ -1805,13 +1805,18 @@ FigureColnameInternal(Node *node, char **name)
 				char	   *fname = NULL;
 				ListCell   *l;
 
-				/* find last field name, if any, ignoring "*" and subscripts */
+				/*
+				 * find last field name, if any, ignoring subscripts, and use
+				 * '?column?' when there's a trailing '*'.
+				 */
 				foreach(l, ind->indirection)
 				{
 					Node	   *i = lfirst(l);
 
 					if (IsA(i, String))
 						fname = strVal(i);
+					else if (IsA(i, A_Star))
+						fname = "?column?";
 				}
 				if (fname)
 				{
