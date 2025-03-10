@@ -6131,7 +6131,7 @@ SELECT (jb).a.b.c.* FROM test_jsonb_dot_notation;
 (1 row)
 
 SELECT (jb).a.**.x FROM test_jsonb_dot_notation; -- not supported
-ERROR:  syntax error at or near "**"
+ERROR:  arbitrary depth wild card in simple json accessor not supported yet
 LINE 1: SELECT (jb).a.**.x FROM test_jsonb_dot_notation;
                       ^
 EXPLAIN (VERBOSE, COSTS OFF) SELECT (jb).* FROM test_jsonb_dot_notation;

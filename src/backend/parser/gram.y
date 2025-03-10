@@ -687,7 +687,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  */
 %token <str>	IDENT UIDENT FCONST SCONST USCONST BCONST XCONST Op
 %token <ival>	ICONST PARAM
-%token			TYPECAST DOT_DOT COLON_EQUALS EQUALS_GREATER
+%token			TYPECAST DOT_DOT COLON_EQUALS EQUALS_GREATER DOUBLE_ASTERISK
 %token			LESS_EQUALS GREATER_EQUALS NOT_EQUALS
 
 /*
@@ -16940,6 +16940,13 @@ indirection_el:
 			| '.' '*'
 				{
 					$$ = (Node *) makeNode(A_Star);
+				}
+			| '.' DOUBLE_ASTERISK
+				{
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("arbitrary depth wild card in simple json accessor not supported"),
+					parser_errposition(@2)));
 				}
 			| '[' a_expr ']'
 				{

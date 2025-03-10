@@ -321,6 +321,7 @@ array			({ident_cont}|{whitespace}|[\[\]\+\-\*\%\/\(\)\>\.])*
 typecast		"::"
 dot_dot			\.\.
 colon_equals	":="
+double_asterisk	"**"
 
 /*
  * These operator-like tokens (unlike the above ones) also match the {operator}
@@ -831,6 +832,10 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 {colon_equals}	{
 					return COLON_EQUALS;
 				}
+
+{double_asterisk}	{
+						return DOUBLE_ASTERISK;
+					}
 
 {equals_greater} {
 					return EQUALS_GREATER;
