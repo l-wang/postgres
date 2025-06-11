@@ -1,9 +1,91 @@
-blackhole_am
-============
+### Postgres Build Instructions
+```
+// configure the build
+./configure --enable-debug --enable-cassert --prefix /tmp/pgsql
 
-This module is a PostgreSQL extension template wanted as minimalistic
-as possible that can be used for the development of other table access
-methods, which provides documentation.
+// build using parallel -j flag
+make -j$(nproc) -s
 
-By design, any data sent to a table using this access method is sent to
-the void, and disappears purely and simply.
+// install into prefix directory
+make install
+
+// put prefix directory in your path
+export PATH=/tmp/pgsql/bin:$PATH
+
+// run initdb to initialize the database directory
+initdb -D /tmp/pgdata
+
+// start the database
+pg_ctl -D /tmp/pgdata -l /tmp/pgdata/logfile start
+
+// now you should be able to connect via psql client
+psql postgres
+```
+
+### Extension Build Instructions
+```
+// make sure you're in the correct extension directory
+cd contrib/blackhole_am/
+
+// compile and install
+make -j$(nproc) && make install
+
+// to recompile your incremental changes and install
+make install
+```
+Note that to reflect your changes after `make install`, you need to
+exit (Ctrl-d) your existing psql session and open a new one to reload
+the newly updated extension.
+
+### Task
+Modify this blackhole_am contrib module to make the following three
+queries work:
+1. CREATE TABLE
+2. INSERT
+3. SELECT
+
+So for example, something like this should be expected at the end:
+```
+postgres=# CREATE EXTENSION blackhole_am;
+CREATE EXTENSION
+postgres=# CREATE TABLE foo (a int) USING blackhole_am;
+CREATE TABLE
+postgres=# SELECT * FROM foo;
+ a
+---
+(0 rows)
+
+postgres=# INSERT INTO foo VALUES (42);
+INSERT 0 1
+postgres=# SELECT * FROM foo;
+ a
+----
+ 42
+(1 row)
+
+postgres=# INSERT INTO foo VALUES (1), (23);
+INSERT 0 2
+postgres=# SELECT * FROM foo;
+ a
+----
+ 42
+  1
+ 23
+(3 rows)
+```
+
+For the INSERT calls, you'll need to store the input values in some
+form of storage. Simply use a FILE implementation using the stdio
+library or however you'd like (e.g. in-memory array).  So for example,
+the above `foo` table may simply exist on disk as such:
+```
+$ cat /tmp/blackhole_am_16402
+42
+1
+23
+```
+
+Optionally, try making DELETE and UPDATE work as well (or explain it
+verbally if time allows).
+
+Good luck!
