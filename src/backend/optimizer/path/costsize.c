@@ -108,6 +108,8 @@
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 #include "utils/tuplesort.h"
+#include "utils/builtins.h"
+#include "statistics/statistics.h"
 
 
 #define LOG2(x)  (log(x) / 0.693147180559945)
@@ -5692,6 +5694,12 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 		bool		ref_is_outer;
 		List	   *removedlist;
 		ListCell   *cell;
+		Selectivity join_mcv_sel = 0.0;
+		RelOptInfo *con_rel;
+		RelOptInfo *ref_rel;
+		JoinStatsMatch *join_match;
+		int2vector *filter_attnums_vec;
+		JoinMCVList *join_mcv;
 
 		/*
 		 * This FK is not relevant unless it connects a baserel on one side of
@@ -5821,6 +5829,10 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 		 * knowledge that each referencing row will match exactly one row in
 		 * the referenced table.
 		 *
+		 * ENHANCED: First check if extended join MCV statistics exist for
+		 * this FK. If so, use the more accurate MCV-based selectivity instead
+		 * of the FK heuristic (1.0 / ref_tuples).
+		 *
 		 * XXX that's not true in the presence of nulls in the referencing
 		 * column(s), so in principle we should derate the estimate for those.
 		 * However (1) if there are any strict restriction clauses for the
@@ -5839,6 +5851,59 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 		 * work, it is uncommon in practice to have an FK referencing a parent
 		 * table.  So, at least for now, disregard inheritance here.
 		 */
+		con_rel = find_base_rel(root, fkinfo->con_relid);
+		ref_rel = find_base_rel(root, fkinfo->ref_relid);
+
+		/* Try to detect cross-table MCV opportunity */
+		join_match = find_join_mcv_pattern(root,
+										   ref_is_outer ? ref_rel : con_rel,
+										   ref_is_outer ? con_rel : ref_rel,
+										   *restrictlist);
+		if (join_match)
+		{
+			/* Convert filter_attnums list to int2vector */
+			filter_attnums_vec = NULL;
+			if (join_match->filter_attnums != NIL)
+			{
+				int			nfilters = list_length(join_match->filter_attnums);
+				int16	   *attnums = palloc(nfilters * sizeof(int16));
+				ListCell   *lc2;
+				int			i = 0;
+
+				foreach(lc2, join_match->filter_attnums)
+					attnums[i++] = lfirst_int(lc2);
+
+				filter_attnums_vec = buildint2vector(attnums, nfilters);
+				pfree(attnums);
+			}
+
+			/* Look up extended join MCV stats */
+			join_mcv = statext_join_mcv_load(
+											 join_match->target_rel,
+											 join_match->target_joinkey,
+											 join_match->other_rel,
+											 join_match->other_joinkey,
+											 filter_attnums_vec);
+
+			if (filter_attnums_vec)
+				pfree(filter_attnums_vec);
+
+			if (join_mcv)
+			{
+				/* Apply join MCV selectivity for FK join */
+				join_mcv_sel = join_mcv_clauselist_selectivity(
+															   join_mcv,
+															   join_match->filter_values,
+															   join_match->filter_attnums,
+															   join_match->collation);
+
+				pfree(join_mcv);
+
+				ereport(DEBUG1,
+						(errmsg("  FK: extended join MCV found, selectivity = %.6f", join_mcv_sel)));
+			}
+		}
+
 		if (jointype == JOIN_SEMI || jointype == JOIN_ANTI)
 		{
 			/*
@@ -5852,22 +5917,42 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 			 * restriction clauses, which is rows / tuples; but we must guard
 			 * against tuples == 0.
 			 */
-			RelOptInfo *ref_rel = find_base_rel(root, fkinfo->ref_relid);
 			double		ref_tuples = Max(ref_rel->tuples, 1.0);
 
 			fkselec *= ref_rel->rows / ref_tuples;
 		}
+		else if (join_mcv_sel > 0)
+		{
+			/*
+			 * Apply extended join MCV selectivity.
+			 *
+			 * For IN clauses: join_mcv_sel = average selectivity per filter
+			 * constant For equality:   join_mcv_sel = selectivity for that
+			 * single constant Using the average ensures multiplying by
+			 * inner_rows recovers the correct total selectivity.
+			 */
+			fkselec *= join_mcv_sel;
+
+			ereport(DEBUG1,
+					(errmsg("  FK APPLIED (MCV): selectivity = %.6f, cumulative fkselec = %.6f",
+							join_mcv_sel, fkselec)));
+		}
 		else
 		{
 			/*
-			 * Otherwise, selectivity is exactly 1/referenced-table-size; but
-			 * guard against tuples == 0.  Note we should use the raw table
-			 * tuple count, not any estimate of its filtered or joined size.
+			 * Fall back to FK heuristic: selectivity is exactly
+			 * 1/referenced-table-size; but guard against tuples == 0.  Note
+			 * we should use the raw table tuple count, not any estimate of
+			 * its filtered or joined size.
 			 */
-			RelOptInfo *ref_rel = find_base_rel(root, fkinfo->ref_relid);
 			double		ref_tuples = Max(ref_rel->tuples, 1.0);
+			Selectivity this_fkselec = 1.0 / ref_tuples;
 
-			fkselec *= 1.0 / ref_tuples;
+			fkselec *= this_fkselec;
+
+			ereport(DEBUG1,
+					(errmsg("  FK APPLIED (heuristic): selectivity = 1.0 / %.0f = %.6f, cumulative fkselec = %.6f",
+							ref_tuples, this_fkselec, fkselec)));
 		}
 
 		/*

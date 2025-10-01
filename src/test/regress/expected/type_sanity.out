@@ -79,7 +79,8 @@ ORDER BY t1.oid;
  4600 | pg_brin_bloom_summary
  4601 | pg_brin_minmax_multi_summary
  5017 | pg_mcv_list
-(6 rows)
+ 8328 | pg_join_mcv_list
+(7 rows)
 
 -- Make sure typarray points to a "true" array type of our own base
 SELECT t1.oid, t1.typname as basetype, t2.typname as arraytype,
@@ -758,7 +759,8 @@ SELECT oid, typname, typtype, typelem, typarray
                     WHERE a.atttypid=t.oid AND
                           a.attnum > 0 AND
                           a.attrelid='tab_core_types'::regclass);
- oid | typname | typtype | typelem | typarray 
------+---------+---------+---------+----------
-(0 rows)
+ oid  |     typname      | typtype | typelem | typarray 
+------+------------------+---------+---------+----------
+ 8328 | pg_join_mcv_list | b       |       0 |        0
+(1 row)
 

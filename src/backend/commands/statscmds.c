@@ -43,6 +43,9 @@
 static char *ChooseExtendedStatisticName(const char *name1, const char *name2,
 										 const char *label, Oid namespaceid);
 static char *ChooseExtendedStatisticNameAddition(List *exprs);
+static bool extract_join_columns(JoinExpr *join, int stxkeys_varno,
+								 Oid *relid, Oid *other_relid,
+								 int16 *jk_attnums);
 
 
 /* qsort comparator for the attnums in CreateStatistics */
@@ -78,7 +81,7 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	Datum		exprsDatum;
 	Relation	statrel;
 	Relation	rel = NULL;
-	Oid			relid;
+	Oid			relid = InvalidOid;
 	ObjectAddress parentobject,
 				myself;
 	Datum		types[4];		/* one for each possible type of statistic */
@@ -92,29 +95,30 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	int			i;
 	ListCell   *cell;
 	ListCell   *cell2;
+	Node	   *rln;
+	JoinExpr   *join = NULL;
+	Relation	other_rel = NULL;
+	Oid			other_relid = InvalidOid;
+	int16		jk_attnums[2];	/* Join key attribute numbers: [rel's jk
+								 * attnum1, other_rel's jk attnum2] */
+	int			stxkeys_varno = 0;	/* For joins: which table has the
+									 * statistics columns */
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
 	/*
-	 * Examine the FROM clause.  Currently, we only allow it to be a single
-	 * simple table, but later we'll probably allow multiple tables and JOIN
-	 * syntax.  The grammar is already prepared for that, so we have to check
-	 * here that what we got is what we can support.
+	 * Examine the FROM clause. We support either: 1. Single RangeVar for
+	 * single-table statistics 2. JoinExpr for join statistics
 	 */
 	if (list_length(stmt->relations) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("only a single relation is allowed in CREATE STATISTICS")));
+				 errmsg("only a single relation or JOIN is allowed in CREATE STATISTICS")));
 
-	foreach(cell, stmt->relations)
+	rln = (Node *) linitial(stmt->relations);
+
+	if (IsA(rln, RangeVar))
 	{
-		Node	   *rln = (Node *) lfirst(cell);
-
-		if (!IsA(rln, RangeVar))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("only a single relation is allowed in CREATE STATISTICS")));
-
 		/*
 		 * CREATE STATISTICS will influence future execution plans but does
 		 * not interfere with currently executing plans.  So it should be
@@ -152,70 +156,25 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied: \"%s\" is a system catalog",
 							RelationGetRelationName(rel))));
+
+		relid = RelationGetRelid(rel);
 	}
-
-	Assert(rel);
-	relid = RelationGetRelid(rel);
-
-	/*
-	 * If the node has a name, split it up and determine creation namespace.
-	 * If not, put the object in the same namespace as the relation, and cons
-	 * up a name for it.  (This can happen either via "CREATE STATISTICS ..."
-	 * or via "CREATE TABLE ... (LIKE)".)
-	 */
-	if (stmt->defnames)
-		namespaceId = QualifiedNameGetCreationNamespace(stmt->defnames,
-														&namestr);
+	else if (IsA(rln, JoinExpr))
+	{
+		Assert(stmt->transformed);
+		join = (JoinExpr *) rln;
+	}
 	else
 	{
-		namespaceId = RelationGetNamespace(rel);
-		namestr = ChooseExtendedStatisticName(RelationGetRelationName(rel),
-											  ChooseExtendedStatisticNameAddition(stmt->exprs),
-											  "stat",
-											  namespaceId);
-	}
-	namestrcpy(&stxname, namestr);
-
-	/*
-	 * Check we have creation rights in target namespace.  Skip check if
-	 * caller doesn't want it.
-	 */
-	if (check_rights)
-	{
-		AclResult	aclresult;
-
-		aclresult = object_aclcheck(NamespaceRelationId, namespaceId,
-									GetUserId(), ACL_CREATE);
-		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, OBJECT_SCHEMA,
-						   get_namespace_name(namespaceId));
-	}
-
-	/*
-	 * Deal with the possibility that the statistics object already exists.
-	 */
-	if (SearchSysCacheExists2(STATEXTNAMENSP,
-							  CStringGetDatum(namestr),
-							  ObjectIdGetDatum(namespaceId)))
-	{
-		if (stmt->if_not_exists)
-		{
-			/*
-			 * Since stats objects aren't members of extensions (see comments
-			 * below), no need for checkMembershipInCurrentExtension here.
-			 */
-			ereport(NOTICE,
-					(errcode(ERRCODE_DUPLICATE_OBJECT),
-					 errmsg("statistics object \"%s\" already exists, skipping",
-							namestr)));
-			relation_close(rel, NoLock);
-			return InvalidObjectAddress;
-		}
-
 		ereport(ERROR,
-				(errcode(ERRCODE_DUPLICATE_OBJECT),
-				 errmsg("statistics object \"%s\" already exists", namestr)));
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("only a single relation or JOIN is allowed in CREATE STATISTICS")));
 	}
+
+	/*
+	 * Namespace and naming will be determined after join extraction (if
+	 * applicable) so we have access to the relations.
+	 */
 
 	/*
 	 * Make sure no more than STATS_MAX_DIMENSIONS columns are used. There
@@ -290,6 +249,7 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 		{
 			Var		   *var = (Var *) selem->expr;
 			TypeCacheEntry *type;
+			Oid			var_relid;
 
 			/* Disallow use of system attributes in extended stats */
 			if (var->varattno <= 0)
@@ -297,22 +257,48 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("statistics creation on system columns is not supported")));
 
-			/* Disallow use of virtual generated columns in extended stats */
-			if (get_attgenerated(relid, var->varattno) == ATTRIBUTE_GENERATED_VIRTUAL)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("statistics creation on virtual generated columns is not supported")));
+			/*
+			 * For join stats, track which table the stats objects are from.
+			 * Currently only supports one table (other_rel).
+			 */
+			if (join)
+			{
+				/* Track which table has the statistics columns */
+				if (stxkeys_varno == 0)
+					stxkeys_varno = var->varno;
+				else if (stxkeys_varno != var->varno)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+							 errmsg("join statistics columns from different tables are not supported")));
 
-			/* Disallow data types without a less-than operator */
-			type = lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
-			if (type->lt_opr == InvalidOid)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
-								get_attname(relid, var->varattno, false), format_type_be(var->vartype))));
+				/*
+				 * For joins, we'll validate the column after extracting join
+				 * info and determining which table is which.
+				 */
+				attnums[nattnums] = var->varattno;
+				nattnums++;
+			}
+			else
+			{
+				var_relid = relid;
 
-			attnums[nattnums] = var->varattno;
-			nattnums++;
+				/* Disallow use of virtual generated columns in extended stats */
+				if (get_attgenerated(var_relid, var->varattno) == ATTRIBUTE_GENERATED_VIRTUAL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("statistics creation on virtual generated columns is not supported")));
+
+				/* Disallow data types without a less-than operator */
+				type = lookup_type_cache(var->vartype, TYPECACHE_LT_OPR);
+				if (type->lt_opr == InvalidOid)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
+									get_attname(var_relid, var->varattno, false), format_type_be(var->vartype))));
+
+				attnums[nattnums] = var->varattno;
+				nattnums++;
+			}
 		}
 		else					/* expression */
 		{
@@ -364,6 +350,114 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 
 			stxexprs = lappend(stxexprs, expr);
 		}
+	}
+
+	/*
+	 * For join statistics, now that we know which table has the statistics
+	 * columns, extract the join information.
+	 */
+	if (join)
+	{
+		if (stxkeys_varno == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("join statistics require at least one column")));
+
+		if (!extract_join_columns(join, stxkeys_varno,
+								  &relid, &other_relid,
+								  jk_attnums))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("join statistics require a simple equijoin condition")));
+
+		/* Open both relations now for uniform access later */
+		rel = relation_open(relid, NoLock);
+		other_rel = relation_open(other_relid, NoLock);
+
+		/*
+		 * Validate statistics columns now that we know which table they're
+		 * from
+		 */
+		for (i = 0; i < nattnums; i++)
+		{
+			TypeCacheEntry *type;
+			Oid			atttype;
+
+			if (get_attgenerated(other_relid, attnums[i]) == ATTRIBUTE_GENERATED_VIRTUAL)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("statistics creation on virtual generated columns is not supported")));
+
+			/* Disallow data types without a less-than operator */
+			atttype = get_atttype(other_relid, attnums[i]);
+			type = lookup_type_cache(atttype, TYPECACHE_LT_OPR);
+			if (type->lt_opr == InvalidOid)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("column \"%s\" cannot be used in statistics because its type %s has no default btree operator class",
+								get_attname(other_relid, attnums[i], false),
+								format_type_be(atttype))));
+		}
+	}
+
+	/*
+	 * Now determine namespace and name. Use rel (primary table for joins).
+	 */
+	if (stmt->defnames)
+		namespaceId = QualifiedNameGetCreationNamespace(stmt->defnames,
+														&namestr);
+	else
+	{
+		namespaceId = RelationGetNamespace(rel);
+		namestr = ChooseExtendedStatisticName(RelationGetRelationName(rel),
+											  ChooseExtendedStatisticNameAddition(stmt->exprs),
+											  "stat",
+											  namespaceId);
+	}
+	namestrcpy(&stxname, namestr);
+
+	/*
+	 * Check we have creation rights in target namespace.  Skip check if
+	 * caller doesn't want it.
+	 */
+	if (check_rights)
+	{
+		AclResult	aclresult;
+
+		aclresult = object_aclcheck(NamespaceRelationId, namespaceId,
+									GetUserId(), ACL_CREATE);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(aclresult, OBJECT_SCHEMA,
+						   get_namespace_name(namespaceId));
+	}
+
+	/*
+	 * Deal with the possibility that the statistics object already exists.
+	 */
+	if (SearchSysCacheExists2(STATEXTNAMENSP,
+							  CStringGetDatum(namestr),
+							  ObjectIdGetDatum(namespaceId)))
+	{
+		if (stmt->if_not_exists)
+		{
+			/*
+			 * Since stats objects aren't members of extensions (see comments
+			 * below), no need for checkMembershipInCurrentExtension here.
+			 */
+			ereport(NOTICE,
+					(errcode(ERRCODE_DUPLICATE_OBJECT),
+					 errmsg("statistics object \"%s\" already exists, skipping",
+							namestr)));
+			/* Close relations */
+			relation_close(rel, NoLock);
+			if (other_rel)
+				relation_close(other_rel, NoLock);
+			return InvalidObjectAddress;
+		}
+
+		ereport(ERROR,
+				(errcode(ERRCODE_DUPLICATE_OBJECT),
+				 errmsg("statistics object \"%s\" already exists", namestr)));
 	}
 
 	/*
@@ -431,13 +525,21 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	build_expressions = (stxexprs != NIL);
 
 	/*
-	 * Check that at least two columns were specified in the statement, or
-	 * that we're building statistics on a single expression.
+	 * Check column count requirements. - Join stats: need at least 1 column
+	 * (join adds implicit correlation) - Single-table stats: need at least 2
+	 * columns or 1 expression
 	 */
-	if ((numcols < 2) && (list_length(stxexprs) != 1))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-				 errmsg("extended statistics require at least 2 columns")));
+	{
+		int			min_cols = other_rel ? 1 : 2;
+		bool		is_single_expr = (list_length(stxexprs) == 1);
+
+		if (numcols < min_cols && !(is_single_expr && !other_rel))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg(other_rel ?
+							"extended join statistics require at least one column" :
+							"extended statistics require at least 2 columns")));
+	}
 
 	/*
 	 * Sort the attnums, which makes detecting duplicates somewhat easier, and
@@ -496,14 +598,23 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	/* Form an int2vector representation of the sorted column list */
 	stxkeys = buildint2vector(attnums, nattnums);
 
-	/* construct the char array of enabled statistic types */
+	/*
+	 * Construct the char array of enabled statistic types. For join
+	 * statistics, only MCV is supported (as STATS_EXT_JOIN_MCV).
+	 */
+	if (other_rel && (build_ndistinct || build_dependencies || build_expressions))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("only MCV statistics are supported for join statistics"),
+				 errhint("ndistinct, dependencies, and expression statistics require a single table.")));
+
 	ntypes = 0;
 	if (build_ndistinct)
 		types[ntypes++] = CharGetDatum(STATS_EXT_NDISTINCT);
 	if (build_dependencies)
 		types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
 	if (build_mcv)
-		types[ntypes++] = CharGetDatum(STATS_EXT_MCV);
+		types[ntypes++] = CharGetDatum(other_rel ? STATS_EXT_JOIN_MCV : STATS_EXT_MCV);
 	if (build_expressions)
 		types[ntypes++] = CharGetDatum(STATS_EXT_EXPRESSIONS);
 	Assert(ntypes > 0 && ntypes <= lengthof(types));
@@ -544,6 +655,30 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	if (exprsDatum == (Datum) 0)
 		nulls[Anum_pg_statistic_ext_stxexprs - 1] = true;
 
+	/*
+	 * For join statistics, populate stxotherrel and stxjoinkeys. For
+	 * single-table statistics, these fields are NULL.
+	 */
+	if (other_rel)
+	{
+		int2vector *stxjoinkeys;
+
+		/*
+		 * Build the join keys vector from jk_attnums: [primary_attnum,
+		 * other_attnum]
+		 */
+		stxjoinkeys = buildint2vector(jk_attnums, 2);
+
+		values[Anum_pg_statistic_ext_stxotherrel - 1] = ObjectIdGetDatum(other_relid);
+		values[Anum_pg_statistic_ext_stxjoinkeys - 1] = PointerGetDatum(stxjoinkeys);
+	}
+	else
+	{
+		/* Cross-table fields are NULL for single-table statistics */
+		nulls[Anum_pg_statistic_ext_stxotherrel - 1] = true;
+		nulls[Anum_pg_statistic_ext_stxjoinkeys - 1] = true;
+	}
+
 	/* insert it into pg_statistic_ext */
 	htup = heap_form_tuple(statrel->rd_att, values, nulls);
 	CatalogTupleInsert(statrel, htup);
@@ -560,11 +695,17 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	InvokeObjectPostCreateHook(StatisticExtRelationId, statoid, 0);
 
 	/*
-	 * Invalidate relcache so that others see the new statistics object.
+	 * Invalidate relcache so that others see the new statistics object. For
+	 * join stats, invalidate both tables.
 	 */
 	CacheInvalidateRelcache(rel);
+	if (other_rel)
+		CacheInvalidateRelcache(other_rel);
 
+	/* Close relations */
 	relation_close(rel, NoLock);
+	if (other_rel)
+		relation_close(other_rel, NoLock);
 
 	/*
 	 * Add an AUTO dependency on each column used in the stats, so that the
@@ -575,7 +716,21 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	/* add dependencies for plain column references */
 	for (i = 0; i < nattnums; i++)
 	{
-		ObjectAddressSubSet(parentobject, RelationRelationId, relid, attnums[i]);
+		Oid			col_relid = other_rel ? other_relid : relid;
+
+		ObjectAddressSubSet(parentobject, RelationRelationId, col_relid, attnums[i]);
+		recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
+	}
+
+	/* For join stats, also add dependencies on join columns */
+	if (other_rel)
+	{
+		ObjectAddressSubSet(parentobject, RelationRelationId,
+							relid, jk_attnums[0]);
+		recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
+
+		ObjectAddressSubSet(parentobject, RelationRelationId,
+							other_relid, jk_attnums[1]);
 		recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
 	}
 
@@ -589,8 +744,11 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	 * XXX We intentionally don't consider the expressions before adding this
 	 * dependency, because recordDependencyOnSingleRelExpr may not create any
 	 * dependencies for whole-row Vars.
+	 *
+	 * Join stats are excluded because they span two tables (no single "whole
+	 * table" exists).
 	 */
-	if (!nattnums)
+	if (!join && !nattnums)
 	{
 		ObjectAddressSet(parentobject, RelationRelationId, relid);
 		recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
@@ -928,6 +1086,106 @@ ChooseExtendedStatisticNameAddition(List *exprs)
 			break;
 	}
 	return pstrdup(buf);
+}
+
+/*
+ * extract_join_columns
+ *
+ * Extract join column information from a JoinExpr for join statistics.
+ * Uses stxkeys_varno to determine which table has the statistics columns (currently
+ * this must be the "other" table, not the "primary" table).
+ *
+ * Populates jk_attnums array with join key attribute numbers: [rel's jk, other_rel's jk]
+ *
+ * Returns true if successful, false if the join condition is too complex.
+ *
+ * Currently, supports only simple equijoin: table1.col1 = table2.col2
+ */
+static bool
+extract_join_columns(JoinExpr *join, int stxkeys_varno,
+					 Oid *relid, Oid *other_relid,
+					 int16 *jk_attnums)
+{
+	Oid			left_relid;
+	Oid			right_relid;
+	Node	   *quals;
+	OpExpr	   *opexpr;
+	Var		   *left_var;
+	Var		   *right_var;
+	AttrNumber	left_attnum;
+	AttrNumber	right_attnum;
+
+	if (!IsA(join->larg, RangeVar) || !IsA(join->rarg, RangeVar))
+		return false;
+
+	left_relid = RangeVarGetRelid((RangeVar *) join->larg, NoLock, false);
+	right_relid = RangeVarGetRelid((RangeVar *) join->rarg, NoLock, false);
+
+	quals = join->quals;
+	if (quals == NULL || !IsA(quals, OpExpr))
+		return false;
+
+	opexpr = (OpExpr *) quals;
+
+	/*
+	 * Must be a binary operator (simple equality join) and both operands must
+	 * be column references
+	 */
+	if (list_length(opexpr->args) != 2 ||
+		!IsA(linitial(opexpr->args), Var) || !IsA(lsecond(opexpr->args), Var))
+		return false;
+
+	left_var = (Var *) linitial(opexpr->args);
+	right_var = (Var *) lsecond(opexpr->args);
+
+	/* Extract join columns */
+	if (left_var->varno == 1 && right_var->varno == 2)
+	{
+		left_attnum = left_var->varattno;
+		right_attnum = right_var->varattno;
+	}
+	else if (left_var->varno == 2 && right_var->varno == 1)
+	{
+		left_attnum = right_var->varattno;
+		right_attnum = left_var->varattno;
+	}
+	else
+	{
+		/* Unexpected varno values */
+		return false;
+	}
+
+	/*
+	 * Now assign primary vs other based on which table has the statistics
+	 * columns. Currently, statistics columns must be on the "other" table
+	 * (specified by stxkeys_varno), not the primary table. The primary table
+	 * is the estimation target.
+	 *
+	 * Populate jk_attnums as: [primary_attnum, other_attnum]
+	 */
+	if (stxkeys_varno == 1)
+	{
+		/* Left table has statistics columns, so it's the other table */
+		*other_relid = left_relid;
+		*relid = right_relid;
+		jk_attnums[0] = right_attnum;	/* primary table join column */
+		jk_attnums[1] = left_attnum;	/* other table join column */
+	}
+	else if (stxkeys_varno == 2)
+	{
+		/* Right table has statistics columns, so it's the other table */
+		*other_relid = right_relid;
+		*relid = left_relid;
+		jk_attnums[0] = left_attnum;	/* primary table join column */
+		jk_attnums[1] = right_attnum;	/* other table join column */
+	}
+	else
+	{
+		/* Invalid stxkeys_varno */
+		return false;
+	}
+
+	return true;
 }
 
 /*

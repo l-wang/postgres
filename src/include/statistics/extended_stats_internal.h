@@ -68,6 +68,17 @@ typedef struct StatsBuildData
 	bool	  **nulls;
 } StatsBuildData;
 
+/* candidate for implicit foreign key join MCV statistics collection */
+typedef struct FKJoinStatsCandidate
+{
+	Oid			referencing_rel;
+	AttrNumber	referencing_attr;	/* FK column in referencing table */
+	Oid			referenced_rel;
+	AttrNumber	referenced_attr;	/* PK column in referenced table */
+	AttrNumber	filter_attr;	/* filter column in referenced table
+								 * (dependent on referenced_attr) */
+}			FKJoinStatsCandidate;
+
 
 extern MVNDistinct *statext_ndistinct_build(double totalrows, StatsBuildData *data);
 extern bytea *statext_ndistinct_serialize(MVNDistinct *ndistinct);
@@ -90,6 +101,18 @@ extern MCVList *statext_mcv_build(StatsBuildData *data,
 extern bytea *statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats);
 extern MCVList *statext_mcv_deserialize(bytea *data);
 extern void statext_mcv_free(MCVList *mcvlist);
+
+extern JoinMCVList * statext_join_mcv_build(Oid stxoid,
+											Oid primary_relid,
+											Oid orther_relid,
+											int2vector *joinkeys,
+											int2vector *filter_attnums,
+											int numrows,
+											HeapTuple *rows,
+											int natts,
+											VacAttrStats **vacattrstats);
+extern bytea *statext_join_mcv_serialize(JoinMCVList * mcvlist);
+extern JoinMCVList * statext_join_mcv_deserialize(bytea *data);
 
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,

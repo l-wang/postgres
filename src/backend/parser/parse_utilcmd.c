@@ -3155,7 +3155,10 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 	ParseState *pstate;
 	ParseNamespaceItem *nsitem;
 	ListCell   *l;
-	Relation	rel;
+	Relation	rel = NULL;
+	bool		isjoin = !OidIsValid(relid);
+	Relation	left_rel = NULL;
+	Relation	right_rel = NULL;
 
 	/* Nothing to do if statement already transformed. */
 	if (stmt->transformed)
@@ -3165,18 +3168,80 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
 
-	/*
-	 * Put the parent table into the rtable so that the expressions can refer
-	 * to its fields without qualification.  Caller is responsible for locking
-	 * relation, but we still need to open it.
-	 */
-	rel = relation_open(relid, NoLock);
-	nsitem = addRangeTableEntryForRelation(pstate, rel,
-										   AccessShareLock,
-										   NULL, false, true);
+	if (isjoin)
+	{
+		/*
+		 * Extract the two tables from the JOIN expression and add them to the
+		 * namespace.
+		 */
+		Node	   *fromNode = (Node *) linitial(stmt->relations);
+		JoinExpr   *join;
+		RangeVar   *lrel;
+		RangeVar   *rrel;
+		ParseNamespaceItem *left_nsitem;
+		ParseNamespaceItem *right_nsitem;
 
-	/* no to join list, yes to namespaces */
-	addNSItemToQuery(pstate, nsitem, false, true, true);
+		if (!IsA(fromNode, JoinExpr))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("extended join statistics require a JOIN clause")));
+
+		join = (JoinExpr *) fromNode;
+
+		/* Extract left and right RangeVars */
+		if (!IsA(join->larg, RangeVar) || !IsA(join->rarg, RangeVar))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("extended join statistics currently support only simple two-table joins")));
+
+		lrel = (RangeVar *) join->larg;
+		rrel = (RangeVar *) join->rarg;
+
+		/*
+		 * Open both relations and add them to the namespace. We need
+		 * ShareUpdateExclusiveLock for statistics creation (see comments in
+		 * CreateStatistics).
+		 */
+		left_rel = table_openrv(lrel, ShareUpdateExclusiveLock);
+		right_rel = table_openrv(rrel, ShareUpdateExclusiveLock);
+
+		/* Add left table to rtable and namespace */
+		left_nsitem = addRangeTableEntryForRelation(pstate, left_rel,
+													AccessShareLock,
+													lrel->alias, false, true);
+		addNSItemToQuery(pstate, left_nsitem, false, true, true);
+
+		/* Add right table to rtable and namespace */
+		right_nsitem = addRangeTableEntryForRelation(pstate, right_rel,
+													 AccessShareLock,
+													 rrel->alias, false, true);
+		addNSItemToQuery(pstate, right_nsitem, false, true, true);
+
+		/*
+		 * Transform the join quals so they become Var nodes. This is
+		 * necessary for extract_join_columns() to work.
+		 */
+		if (join->quals)
+		{
+			join->quals = transformExpr(pstate, join->quals, EXPR_KIND_JOIN_ON);
+			assign_expr_collations(pstate, join->quals);
+		}
+	}
+	else
+	{
+		/*
+		 * Put the parent table into the rtable so that the expressions can
+		 * refer to its fields without qualification.  Caller is responsible
+		 * for locking relation, but we still need to open it.
+		 */
+		rel = relation_open(relid, NoLock);
+		nsitem = addRangeTableEntryForRelation(pstate, rel,
+											   AccessShareLock,
+											   NULL, false, true);
+
+		/* no to join list, yes to namespaces */
+		addNSItemToQuery(pstate, nsitem, false, true, true);
+	}
 
 	/* take care of any expressions */
 	foreach(l, stmt->exprs)
@@ -3194,19 +3259,36 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 		}
 	}
 
-	/*
-	 * Check that only the base rel is mentioned.  (This should be dead code
-	 * now that add_missing_from is history.)
-	 */
-	if (list_length(pstate->p_rtable) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-				 errmsg("statistics expressions can refer only to the table being referenced")));
+	if (!isjoin)
+	{
+		/*
+		 * Check that only the base rel is mentioned.  (This should be dead
+		 * code now that add_missing_from is history.)
+		 */
+		if (list_length(pstate->p_rtable) != 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					 errmsg("statistics expressions can refer only to the table being referenced")));
+
+		/* Close relation */
+		table_close(rel, NoLock);
+	}
+	else
+	{
+		/*
+		 * For extended join stats, we expect exactly 2 tables in the rtable.
+		 */
+		if (list_length(pstate->p_rtable) != 2)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+					 errmsg("extended join statistics must reference exactly two tables")));
+
+		/* Close relations */
+		table_close(left_rel, NoLock);
+		table_close(right_rel, NoLock);
+	}
 
 	free_parsestate(pstate);
-
-	/* Close relation */
-	table_close(rel, NoLock);
 
 	/* Mark statement as successfully transformed */
 	stmt->transformed = true;

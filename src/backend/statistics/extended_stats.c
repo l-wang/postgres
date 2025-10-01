@@ -20,7 +20,11 @@
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/table.h"
+#include "access/tableam.h"
+#include "catalog/dependency.h"
 #include "catalog/indexing.h"
+#include "catalog/pg_constraint.h"
+#include "catalog/pg_namespace.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_statistic_ext_data.h"
 #include "commands/defrem.h"
@@ -70,6 +74,11 @@ typedef struct StatExtEntry
 	List	   *types;			/* 'char' list of enabled statistics kinds */
 	int			stattarget;		/* statistics target (-1 for default) */
 	List	   *exprs;			/* expressions */
+
+	/* join statistics fields (NULL/invalid for single-table stats) */
+	Oid			stxotherrel;	/* other table's OID (for type 'c' stats) */
+	int2vector *stxjoinkeys;	/* join keys [target_joinkey, other_joinkey] */
+	int2vector *stxkeys;		/* filter column attnums (from otherrel) */
 } StatExtEntry;
 
 
@@ -78,9 +87,14 @@ static VacAttrStats **lookup_var_attr_stats(Bitmapset *attrs, List *exprs,
 											int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Oid statOid, bool inh,
 						  MVNDistinct *ndistinct, MVDependencies *dependencies,
-						  MCVList *mcv, Datum exprs, VacAttrStats **stats);
+						  MCVList *mcv, Datum exprs, JoinMCVList * join_mcv,
+						  VacAttrStats **stats);
 static int	statext_compute_stattarget(int stattarget,
 									   int nattrs, VacAttrStats **stats);
+static bool statext_join_mcv_exists(List *statslist,
+									Oid primary_rel, AttrNumber primary_joinkey_attr,
+									Oid other_rel, AttrNumber other_joinkey_attr,
+									AttrNumber filter_attr);
 
 /* Information needed to analyze a single simple expression. */
 typedef struct AnlExprData
@@ -99,6 +113,18 @@ static StatsBuildData *make_build_data(Relation rel, StatExtEntry *stat,
 									   int numrows, HeapTuple *rows,
 									   VacAttrStats **stats, int stattarget);
 
+/* Join MCV functions */
+static void build_implicit_join_mcv_stats_from_fk(Relation onerel, List *statslist,
+												  Relation pg_stext, bool inh,
+												  int numrows, HeapTuple *rows,
+												  int natts, VacAttrStats **vacattrstats);
+static List *detect_join_stats_candidates(Relation rel);
+static Oid	create_implicit_join_stat(Relation pg_stext,
+									  Oid referencing_rel,
+									  AttrNumber referencing_attr,
+									  Oid referenced_rel,
+									  AttrNumber referenced_attr,
+									  AttrNumber filter_attr);
 
 /*
  * Compute requested extended stats, using the rows sampled for the plain
@@ -155,6 +181,7 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
 		MCVList    *mcv = NULL;
+		JoinMCVList *join_mcv = NULL;
 		Datum		exprstats = (Datum) 0;
 		VacAttrStats **stats;
 		ListCell   *lc2;
@@ -164,10 +191,14 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
 		 * not, report this fact (except in autovacuum) and move on.
+		 *
+		 * Note: join mcv stats don't have columns in the primary table, so
+		 * lookup_var_attr_stats will return NULL. We handle this below.
 		 */
 		stats = lookup_var_attr_stats(stat->columns, stat->exprs,
 									  natts, vacattrstats);
-		if (!stats)
+		if (!stats && !(list_length(stat->types) == 1 &&
+						linitial_int(stat->types) == STATS_EXT_JOIN_MCV))
 		{
 			if (!AmAutoVacuumWorkerProcess())
 				ereport(WARNING,
@@ -180,21 +211,34 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 			continue;
 		}
 
-		/* compute statistics target for this statistics object */
-		stattarget = statext_compute_stattarget(stat->stattarget,
-												bms_num_members(stat->columns),
-												stats);
-
 		/*
-		 * Don't rebuild statistics objects with statistics target set to 0
-		 * (we just leave the existing values around, just like we do for
-		 * regular per-column statistics).
+		 * Join-mcv stats reuse MCVs already computed for the join column, so
+		 * no separate stattarget or StatsBuildData is needed.
 		 */
-		if (stattarget == 0)
-			continue;
+		if (list_length(stat->types) == 1 &&
+			linitial_int(stat->types) == STATS_EXT_JOIN_MCV)
+		{
+			stattarget = -1;
+			data = NULL;
+		}
+		else
+		{
+			/* compute statistics target for this statistics object */
+			stattarget = statext_compute_stattarget(stat->stattarget,
+													bms_num_members(stat->columns),
+													stats);
 
-		/* evaluate expressions (if the statistics object has any) */
-		data = make_build_data(onerel, stat, numrows, rows, stats, stattarget);
+			/*
+			 * Don't rebuild statistics objects with statistics target set to
+			 * 0 (we just leave the existing values around, just like we do
+			 * for regular per-column statistics).
+			 */
+			if (stattarget == 0)
+				continue;
+
+			/* evaluate expressions (if the statistics object has any) */
+			data = make_build_data(onerel, stat, numrows, rows, stats, stattarget);
+		}
 
 		/* compute statistic of each requested type */
 		foreach(lc2, stat->types)
@@ -223,11 +267,38 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 
 				exprstats = serialize_expr_stats(exprdata, nexprs);
 			}
+			else if (t == STATS_EXT_JOIN_MCV)
+			{
+				if (!OidIsValid(stat->stxotherrel))
+				{
+					elog(WARNING, "skipping join mcv stat \"%s.%s\": missing stxotherrel",
+						 stat->schema, stat->name);
+					continue;
+				}
+
+				if (!stat->stxjoinkeys || stat->stxjoinkeys->dim1 != 2)
+				{
+					elog(WARNING, "skipping join mcv stat \"%s.%s\": invalid stxjoinkeys",
+						 stat->schema, stat->name);
+					continue;
+				}
+
+				join_mcv = statext_join_mcv_build(stat->statOid,
+												  RelationGetRelid(onerel),
+												  stat->stxotherrel,
+												  stat->stxjoinkeys,
+												  stat->stxkeys,
+												  numrows,
+												  rows,
+												  natts,
+												  vacattrstats);
+			}
 		}
 
-		/* store the statistics in the catalog */
+		/* Store all statistics in the catalog */
 		statext_store(stat->statOid, inh,
-					  ndistinct, dependencies, mcv, exprstats, stats);
+					  ndistinct, dependencies, mcv, exprstats, join_mcv,
+					  stats);
 
 		/* for reporting progress */
 		pgstat_progress_update_param(PROGRESS_ANALYZE_EXT_STATS_COMPUTED,
@@ -236,6 +307,13 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 		/* free the data used for building this statistics object */
 		MemoryContextReset(cxt);
 	}
+
+	/*
+	 * Now that we've built catalog-based stats (manual + existing implicit),
+	 * detect and build new implicit FK-based join stats if available.
+	 */
+	build_implicit_join_mcv_stats_from_fk(onerel, statslist, pg_stext, inh,
+										  numrows, rows, natts, vacattrstats);
 
 	MemoryContextSwitchTo(oldcxt);
 	MemoryContextDelete(cxt);
@@ -405,6 +483,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 			attnum = Anum_pg_statistic_ext_data_stxdexpr;
 			break;
 
+		case STATS_EXT_JOIN_MCV:
+			attnum = Anum_pg_statistic_ext_data_stxdjoinmcv;
+			break;
+
 		default:
 			elog(ERROR, "unexpected statistics type requested: %d", type);
 	}
@@ -474,7 +556,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
 				   (enabled[i] == STATS_EXT_MCV) ||
-				   (enabled[i] == STATS_EXT_EXPRESSIONS));
+				   (enabled[i] == STATS_EXT_EXPRESSIONS) ||
+				   (enabled[i] == STATS_EXT_JOIN_MCV));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 
@@ -506,6 +589,37 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		}
 
 		entry->exprs = exprs;
+
+		/*
+		 * Fetch join mcv statistics fields (stxotherrel, stxjoinkeys). These
+		 * are NULL/invalid for single-table statistics.
+		 */
+		datum = SysCacheGetAttr(STATEXTOID, htup,
+								Anum_pg_statistic_ext_stxotherrel, &isnull);
+		entry->stxotherrel = isnull ? InvalidOid : DatumGetObjectId(datum);
+
+		datum = SysCacheGetAttr(STATEXTOID, htup,
+								Anum_pg_statistic_ext_stxjoinkeys, &isnull);
+		if (!isnull)
+		{
+			/* Copy the int2vector so it survives catalog cache invalidation */
+			int2vector *orig = (int2vector *) DatumGetPointer(datum);
+
+			entry->stxjoinkeys = (int2vector *) palloc(VARSIZE(orig));
+			memcpy(entry->stxjoinkeys, orig, VARSIZE(orig));
+		}
+		else
+			entry->stxjoinkeys = NULL;
+
+		/* stxkeys is already populated earlier from staForm->stxkeys */
+		if (staForm->stxkeys.dim1 > 0)
+		{
+			/* Copy the int2vector for join MCV stats */
+			entry->stxkeys = (int2vector *) palloc(VARSIZE(&staForm->stxkeys));
+			memcpy(entry->stxkeys, &staForm->stxkeys, VARSIZE(&staForm->stxkeys));
+		}
+		else
+			entry->stxkeys = NULL;
 
 		result = lappend(result, entry);
 	}
@@ -751,6 +865,51 @@ lookup_var_attr_stats(Bitmapset *attrs, List *exprs,
 }
 
 /*
+ * statext_join_mcv_exists
+ *		Check if a join mcv statistic already exists in the statslist.
+ *
+ * This prevents duplicate creation during FK detection when the stat
+ * was already manually created or exists from a previous ANALYZE.
+ */
+static bool
+statext_join_mcv_exists(List *statslist,
+						Oid primary_rel, AttrNumber primary_joinkey_attr,
+						Oid other_rel, AttrNumber other_joinkey_attr,
+						AttrNumber filter_attr)
+{
+	ListCell   *lc;
+
+	foreach(lc, statslist)
+	{
+		StatExtEntry *stat = (StatExtEntry *) lfirst(lc);
+
+		if (!list_member_int(stat->types, STATS_EXT_JOIN_MCV))
+			continue;
+
+		if (stat->stxotherrel != other_rel)
+			continue;
+
+		/* Check if join keys match: [target_joinkey, other_joinkey] */
+		if (!stat->stxjoinkeys || stat->stxjoinkeys->dim1 != 2)
+			continue;
+		if (stat->stxjoinkeys->values[0] != primary_joinkey_attr ||
+			stat->stxjoinkeys->values[1] != other_joinkey_attr)
+			continue;
+
+		/* Check if filter column matches */
+		if (!stat->stxkeys || stat->stxkeys->dim1 != 1)
+			continue;
+		if (stat->stxkeys->values[0] != filter_attr)
+			continue;
+
+		/* Found a match! */
+		return true;
+	}
+
+	return false;
+}
+
+/*
  * statext_store
  *	Serializes the statistics and stores them into the pg_statistic_ext_data
  *	tuple.
@@ -758,7 +917,8 @@ lookup_var_attr_stats(Bitmapset *attrs, List *exprs,
 static void
 statext_store(Oid statOid, bool inh,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList *mcv, Datum exprs, VacAttrStats **stats)
+			  MCVList *mcv, Datum exprs, JoinMCVList * join_mcv,
+			  VacAttrStats **stats)
 {
 	Relation	pg_stextdata;
 	HeapTuple	stup;
@@ -807,6 +967,13 @@ statext_store(Oid statOid, bool inh,
 	{
 		nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = false;
 		values[Anum_pg_statistic_ext_data_stxdexpr - 1] = exprs;
+	}
+	if (join_mcv != NULL)
+	{
+		bytea	   *data = statext_join_mcv_serialize(join_mcv);
+
+		nulls[Anum_pg_statistic_ext_data_stxdjoinmcv - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_data_stxdjoinmcv - 1] = PointerGetDatum(data);
 	}
 
 	/*
@@ -1974,6 +2141,116 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 }
 
 /*
+ * statext_join_mcv_clauselist_selectivity
+ *		Estimate selectivity using extended statistics for joins.
+ *
+ * This function handles cases where clauses involve exactly two base relations:
+ * - Regular joins (varRelid == 0)
+ * - Parameterized paths (varRelid != 0, but clauses reference 2 relations)
+ *
+ * Returns selectivity if join stats were successfully applied, or 1.0 otherwise.
+ * 'estimatedclauses' is populated with the 0-based list position indexes of
+ * clauses whose selectivity was estimated here. The caller should skip these
+ * clauses to avoid double-counting.
+ */
+Selectivity
+statext_join_mcv_clauselist_selectivity(PlannerInfo *root,
+										List *clauses,
+										int varRelid,
+										Bitmapset **estimatedclauses)
+{
+	JoinStatsMatch *join_match;
+
+	/* Try to detect join pattern from clauses */
+	join_match = find_join_mcv_pattern_from_clauses(root, clauses);
+
+	if (join_match)
+	{
+		int2vector *filter_attnums_vec;
+		JoinMCVList *join_mcvs;
+
+		/* Convert filter_attnums list to int2vector */
+		filter_attnums_vec = NULL;
+		if (join_match->filter_attnums != NIL)
+		{
+			int			nfilters = list_length(join_match->filter_attnums);
+			int16	   *attnums = palloc(nfilters * sizeof(int16));
+			ListCell   *lc;
+			int			i = 0;
+
+			foreach(lc, join_match->filter_attnums)
+			{
+				attnums[i++] = lfirst_int(lc);
+			}
+
+			filter_attnums_vec = buildint2vector(attnums, nfilters);
+			pfree(attnums);
+		}
+
+		/* Look up join MCV stats */
+		join_mcvs = statext_join_mcv_load(
+										  join_match->target_rel,
+										  join_match->target_joinkey,
+										  join_match->other_rel,
+										  join_match->other_joinkey,
+										  filter_attnums_vec);
+
+		if (filter_attnums_vec)
+			pfree(filter_attnums_vec);
+
+		if (join_mcvs)
+		{
+			/* Apply join MCV selectivity for non-FK join */
+			Selectivity selec;
+
+			selec = join_mcv_clauselist_selectivity(
+													join_mcvs,
+													join_match->filter_values,
+													join_match->filter_attnums,
+													join_match->collation);
+
+			pfree(join_mcvs);
+
+			if (selec > 0 && selec < 1.0)
+			{
+				int			clause_idx;
+				ListCell   *lc;
+
+				/*
+				 * Mark the join and filter clauses as estimated so they won't
+				 * be double-counted in the per-clause loop.
+				 */
+				clause_idx = -1;
+				foreach(lc, clauses)
+				{
+					RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+
+					clause_idx++;
+
+					/* Mark join clauses */
+					if (list_member_ptr(join_match->join_rinfos, rinfo))
+					{
+						*estimatedclauses = bms_add_member(*estimatedclauses, clause_idx);
+						continue;
+					}
+
+					/* Mark filter clauses */
+					if (list_member_ptr(join_match->filter_rinfos, rinfo))
+					{
+						*estimatedclauses = bms_add_member(*estimatedclauses, clause_idx);
+					}
+				}
+
+				return selec;
+			}
+		}
+	}
+
+	/* No join stats applicable */
+	return 1.0;
+}
+
+/*
  * statext_clauselist_selectivity
  *		Estimate clauses using the best multi-column statistics.
  */
@@ -2610,4 +2887,425 @@ make_build_data(Relation rel, StatExtEntry *stat, int numrows, HeapTuple *rows,
 	FreeExecutorState(estate);
 
 	return result;
+}
+
+/*
+ * get_functional_dependents
+ *		Find columns in referenced table that are functionally dependent on
+ *		the referenced column.
+ *
+ * Scans pg_statistic_ext for the referenced table, loads any functional
+ * dependency statistics, and returns a list of AttrNumbers for columns
+ * that have a dependency: referenced_attr → column
+ *
+ * Returns: List of AttrNumbers
+ */
+static List *
+get_functional_dependents(Oid referenced_rel, AttrNumber referenced_attr)
+{
+	List	   *dependents = NIL;
+	Relation	pg_stext;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tuple;
+
+	/* Open pg_statistic_ext and scan for entries on referenced_rel */
+	pg_stext = table_open(StatisticExtRelationId, AccessShareLock);
+
+	ScanKeyInit(&key,
+				Anum_pg_statistic_ext_stxrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(referenced_rel));
+
+	scan = systable_beginscan(pg_stext, StatisticExtRelidIndexId, true,
+							  NULL, 1, &key);
+
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		Form_pg_statistic_ext stat = (Form_pg_statistic_ext) GETSTRUCT(tuple);
+		MVDependencies *dependencies;
+		int			i;
+
+		/* Check if this stats object has dependencies */
+		if (!statext_is_kind_built(tuple, STATS_EXT_DEPENDENCIES))
+			continue;
+
+		/* Load dependencies */
+		dependencies = statext_dependencies_load(stat->oid, false);
+		if (!dependencies)
+			continue;
+
+		/* Scan each dependency for pattern: referenced_attr → other_col */
+		for (i = 0; i < dependencies->ndeps; i++)
+		{
+			MVDependency *dep = dependencies->deps[i];
+
+			/*
+			 * Check if this is a simple dependency (2 attributes) where the
+			 * first attribute is our referenced_attr
+			 */
+			if (dep->nattributes == 2 &&
+				dep->attributes[0] == referenced_attr)
+			{
+				AttrNumber	dependent_attr = dep->attributes[1];
+
+				/* Add to list if not already there */
+				if (!list_member_int(dependents, dependent_attr))
+					dependents = lappend_int(dependents, dependent_attr);
+			}
+		}
+
+		pfree(dependencies);
+	}
+
+	systable_endscan(scan);
+	table_close(pg_stext, AccessShareLock);
+
+	return dependents;
+}
+
+/*
+ * build_implicit_join_mcv_stats_from_fk
+ *		Build implicit FK-based join MCV statistics for the relation being analyzed
+ */
+static void
+build_implicit_join_mcv_stats_from_fk(Relation onerel, List *statslist,
+									  Relation pg_stext, bool inh,
+									  int numrows, HeapTuple *rows,
+									  int natts, VacAttrStats **vacattrstats)
+{
+	List	   *candidates;
+	ListCell   *lc_cand;
+
+	elog(DEBUG1, "Join mcv stats: Starting FK-based candidate detection for relation %s",
+		 RelationGetRelationName(onerel));
+
+	/* Detect candidates based on FK constraints and functional dependencies */
+	candidates = detect_join_stats_candidates(onerel);
+
+	foreach(lc_cand, candidates)
+	{
+		FKJoinStatsCandidate *candidate = (FKJoinStatsCandidate *) lfirst(lc_cand);
+		JoinMCVList *join_mcv;
+		Oid			stat_oid;
+		int2vector *joinkeys;
+		int2vector *filter_attnums;
+		int16		joinkeys_array[2];
+		int16		filter_array[1];
+
+		elog(DEBUG1, "Join mcv stats: Checking FK candidate for referencing_rel=%u attr=%d, "
+			 "referenced_rel=%u attr=%d, filter_attr=%d",
+			 candidate->referencing_rel, candidate->referencing_attr,
+			 candidate->referenced_rel, candidate->referenced_attr,
+			 candidate->filter_attr);
+
+		/*
+		 * Skip stat that already exists (either manually created or from a
+		 * previous ANALYZE).
+		 */
+		if (statext_join_mcv_exists(statslist,
+									candidate->referencing_rel,
+									candidate->referencing_attr,
+									candidate->referenced_rel,
+									candidate->referenced_attr,
+									candidate->filter_attr))
+		{
+			elog(DEBUG1, "Join mcv stats: Stat already exists, skipping FK candidate");
+			continue;
+		}
+
+		elog(DEBUG1, "Join mcv stats: Creating new implicit stat for FK candidate");
+
+		/* Create implicit statistics object first to get stat_oid */
+		stat_oid = create_implicit_join_stat(pg_stext,
+											 candidate->referencing_rel,
+											 candidate->referencing_attr,
+											 candidate->referenced_rel,
+											 candidate->referenced_attr,
+											 candidate->filter_attr);
+
+		/* Construct joinkeys: [referencing_attr, referenced_attr] */
+		joinkeys_array[0] = candidate->referencing_attr;
+		joinkeys_array[1] = candidate->referenced_attr;
+		joinkeys = buildint2vector(joinkeys_array, 2);
+
+		/* Construct filter_attnums: [filter_attr] */
+		filter_array[0] = candidate->filter_attr;
+		filter_attnums = buildint2vector(filter_array, 1);
+
+		join_mcv = statext_join_mcv_build(stat_oid,
+										  candidate->referencing_rel,
+										  candidate->referenced_rel,
+										  joinkeys,
+										  filter_attnums,
+										  numrows,
+										  rows,
+										  natts,
+										  vacattrstats);
+
+		elog(DEBUG1, "Join mcv stats: Built MCV list with %d items",
+			 join_mcv ? join_mcv->nitems : 0);
+
+		if (!join_mcv)
+			continue;
+
+		statext_store(stat_oid, inh,
+					  NULL, NULL, NULL, (Datum) 0, join_mcv,
+					  NULL);
+
+		pfree(join_mcv);
+	}
+
+	list_free_deep(candidates);
+}
+
+/*
+ * detect_join_stats_candidates
+ *		Scan foreign key constraints on the analyzed table and identify
+ *		candidates for join MCV statistics collection.
+ *
+ * For each FK constraint:
+ * 1. Get the FK column (referencing side)
+ * 2. Get the referenced table and column
+ * 3. Find columns in referenced table with functional dependencies
+ * 4. Create a candidate for each dependent column
+ *
+ * Returns: List of FKJoinStatsCandidate structs
+ */
+static List *
+detect_join_stats_candidates(Relation rel)
+{
+	List	   *candidates = NIL;
+	Relation	pg_constraint;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tuple;
+
+	/* Open pg_constraint and scan for FK constraints on this table */
+	pg_constraint = table_open(ConstraintRelationId, AccessShareLock);
+
+	ScanKeyInit(&key,
+				Anum_pg_constraint_conrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(rel)));
+
+	scan = systable_beginscan(pg_constraint, ConstraintRelidTypidNameIndexId,
+							  true, NULL, 1, &key);
+
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tuple);
+		Datum		conkey_datum;
+		Datum		confkey_datum;
+		bool		isnull;
+		ArrayType  *conkey_array;
+		ArrayType  *confkey_array;
+		int			numfks;
+		AttrNumber *conkey;
+		AttrNumber *confkey;
+		List	   *dependents;
+		ListCell   *lc;
+		int			i;
+
+		/* Only interested in foreign key constraints */
+		if (con->contype != CONSTRAINT_FOREIGN)
+			continue;
+
+		/* Get the FK column numbers */
+		conkey_datum = heap_getattr(tuple, Anum_pg_constraint_conkey,
+									RelationGetDescr(pg_constraint), &isnull);
+		Assert(!isnull);
+		conkey_array = DatumGetArrayTypeP(conkey_datum);
+
+		/* Get the referenced column numbers */
+		confkey_datum = heap_getattr(tuple, Anum_pg_constraint_confkey,
+									 RelationGetDescr(pg_constraint), &isnull);
+		Assert(!isnull);
+		confkey_array = DatumGetArrayTypeP(confkey_datum);
+
+		/* Decode the arrays */
+		numfks = ARR_DIMS(conkey_array)[0];
+		conkey = (AttrNumber *) ARR_DATA_PTR(conkey_array);
+		confkey = (AttrNumber *) ARR_DATA_PTR(confkey_array);
+
+		/*
+		 * For each FK column, find functional dependents in referenced table
+		 * TODO: For now we only handle single-column FKs
+		 */
+		for (i = 0; i < numfks; i++)
+		{
+			AttrNumber	referencing_attr = conkey[i];
+			AttrNumber	referenced_attr = confkey[i];
+			Oid			referenced_rel = con->confrelid;
+
+			/* Find columns dependent on the referenced column */
+			dependents = get_functional_dependents(referenced_rel, referenced_attr);
+
+			/* Create a candidate for each dependent column */
+			foreach(lc, dependents)
+			{
+				AttrNumber	filter_attr = lfirst_int(lc);
+				FKJoinStatsCandidate *candidate;
+
+				candidate = (FKJoinStatsCandidate *) palloc(sizeof(FKJoinStatsCandidate));
+				candidate->referencing_rel = RelationGetRelid(rel);
+				candidate->referencing_attr = referencing_attr;
+				candidate->referenced_rel = referenced_rel;
+				candidate->referenced_attr = referenced_attr;
+				candidate->filter_attr = filter_attr;
+
+				candidates = lappend(candidates, candidate);
+			}
+
+			list_free(dependents);
+		}
+	}
+
+	systable_endscan(scan);
+	table_close(pg_constraint, AccessShareLock);
+
+	return candidates;
+}
+
+/*
+ * create_implicit_join_stat
+ *		Create an implicit pg_statistic_ext entry for join MCV statistics
+ *
+ * This creates a statistics object in pg_statistic_ext to hold the
+ * join MCV data. The object is "implicit" in the sense that it's
+ * automatically created by ANALYZE, not explicitly via CREATE STATISTICS.
+ *
+ * Returns the OID of the created statistics object, or InvalidOid if creation
+ * failed or an equivalent object already exists.
+ */
+static Oid
+create_implicit_join_stat(Relation pg_stext,
+						  Oid referencing_rel,
+						  AttrNumber referencing_attr,
+						  Oid referenced_rel,
+						  AttrNumber referenced_attr,
+						  AttrNumber filter_attr)
+{
+	NameData	stat_name;
+	Oid			stat_oid;
+	Datum		values[Natts_pg_statistic_ext];
+	bool		nulls[Natts_pg_statistic_ext];
+	HeapTuple	htup;
+	Datum		kinds[1];
+	ArrayType  *stxkind;
+	int16		attnums[1];
+	ArrayType  *stxkeys;
+	char		namebuf[NAMEDATALEN];
+	HeapTuple	classtuple;
+	Form_pg_class classform;
+	int16		joinkeys[2];
+	int2vector *jk;
+	Oid			stxowner;
+	ObjectAddress myself;
+	ObjectAddress parentobject;
+
+	/*
+	 * Generate a name for this statistics object in format:
+	 * "_join_mcv_<refrel>_<refattr>_<refedrel>_<refedattr>_<filterattr>"
+	 */
+	snprintf(namebuf, NAMEDATALEN, "_join_mcv_%u_%d_%u_%d_%d",
+			 referencing_rel, referencing_attr,
+			 referenced_rel, referenced_attr, filter_attr);
+	namestrcpy(&stat_name, namebuf);
+
+	/*
+	 * Check if a statistics object with this name already exists in this
+	 * namespace. If so, we'll reuse it rather than creating a duplicate.
+	 */
+	stat_oid = GetSysCacheOid2(STATEXTNAMENSP, Anum_pg_statistic_ext_oid,
+							   PointerGetDatum(&stat_name),
+							   ObjectIdGetDatum(get_rel_namespace(referencing_rel)));
+	if (OidIsValid(stat_oid))
+		return stat_oid;
+
+	/* Create new statistics object */
+	memset(values, 0, sizeof(values));
+	memset(nulls, false, sizeof(nulls));
+
+	/* Generate new OID */
+	stat_oid = GetNewOidWithIndex(pg_stext, StatisticExtOidIndexId,
+								  Anum_pg_statistic_ext_oid);
+
+	values[Anum_pg_statistic_ext_oid - 1] = ObjectIdGetDatum(stat_oid);
+	values[Anum_pg_statistic_ext_stxrelid - 1] = ObjectIdGetDatum(referencing_rel);
+	values[Anum_pg_statistic_ext_stxname - 1] = NameGetDatum(&stat_name);
+	values[Anum_pg_statistic_ext_stxnamespace - 1] =
+		ObjectIdGetDatum(get_rel_namespace(referencing_rel));
+
+	/* Get owner from pg_class */
+	classtuple = SearchSysCache1(RELOID, ObjectIdGetDatum(referencing_rel));
+	if (!HeapTupleIsValid(classtuple))
+		elog(ERROR, "cache lookup failed for relation %u", referencing_rel);
+	classform = (Form_pg_class) GETSTRUCT(classtuple);
+	stxowner = classform->relowner;
+	values[Anum_pg_statistic_ext_stxowner - 1] = ObjectIdGetDatum(stxowner);
+	ReleaseSysCache(classtuple);
+
+	/* stxkeys contains the filter column (from referenced table) */
+	attnums[0] = filter_attr;
+	stxkeys = construct_array_builtin((Datum *) attnums, 1, INT2OID);
+	values[Anum_pg_statistic_ext_stxkeys - 1] = PointerGetDatum(stxkeys);
+
+	/* stxkind contains only STATS_EXT_JOIN_MCV */
+	kinds[0] = CharGetDatum(STATS_EXT_JOIN_MCV);
+	stxkind = construct_array_builtin(kinds, 1, CHAROID);
+	values[Anum_pg_statistic_ext_stxkind - 1] = PointerGetDatum(stxkind);
+
+	/* stxstattarget is NULL (use default) */
+	nulls[Anum_pg_statistic_ext_stxstattarget - 1] = true;
+
+	/* stxexprs is NULL (no expressions) */
+	nulls[Anum_pg_statistic_ext_stxexprs - 1] = true;
+
+	/* stxotherrel - the referenced/orther table */
+	values[Anum_pg_statistic_ext_stxotherrel - 1] = ObjectIdGetDatum(referenced_rel);
+
+	/* stxjoinkeys - join column pairs: [referencing_attr, referenced_attr] */
+	joinkeys[0] = referencing_attr;
+	joinkeys[1] = referenced_attr;
+	jk = buildint2vector(joinkeys, 2);
+	values[Anum_pg_statistic_ext_stxjoinkeys - 1] = PointerGetDatum(jk);
+
+	/* Insert the tuple */
+	htup = heap_form_tuple(RelationGetDescr(pg_stext), values, nulls);
+	CatalogTupleInsert(pg_stext, htup);
+	heap_freetuple(htup);
+
+	/*
+	 * Add dependencies on columns used in the stats, so that the
+	 * stats object goes away if any or all of them get dropped.
+	 */
+	ObjectAddressSet(myself, StatisticExtRelationId, stat_oid);
+
+	/* Dependency on filter column (from referenced table) */
+	ObjectAddressSubSet(parentobject, RelationRelationId,
+						referenced_rel, filter_attr);
+	recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
+
+	/* Dependencies on join columns from both tables */
+	ObjectAddressSubSet(parentobject, RelationRelationId,
+						referencing_rel, referencing_attr);
+	recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
+
+	ObjectAddressSubSet(parentobject, RelationRelationId,
+						referenced_rel, referenced_attr);
+	recordDependencyOn(&myself, &parentobject, DEPENDENCY_AUTO);
+
+	/*
+	 * Also add dependencies on namespace and owner.  These are required
+	 * because the stats object might have a different namespace and/or owner
+	 * than the underlying table(s).
+	 */
+	ObjectAddressSet(parentobject, NamespaceRelationId,
+					 get_rel_namespace(referencing_rel));
+	recordDependencyOn(&myself, &parentobject, DEPENDENCY_NORMAL);
+
+	recordDependencyOnOwner(StatisticExtRelationId, stat_oid, stxowner);
+
+	return stat_oid;
 }

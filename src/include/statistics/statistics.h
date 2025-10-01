@@ -94,6 +94,69 @@ typedef struct MCVList
 	MCVItem		items[FLEXIBLE_ARRAY_MEMBER];	/* array of MCV items */
 } MCVList;
 
+/* Join MCV statistics */
+#define STATS_JOIN_MCV_MAGIC		0xC805E7AB	/* marks serialized bytea */
+#define STATS_JOIN_MCV_TYPE_BASIC	1	/* join MCV list type */
+
+/*
+ * Join MCV (most-common value) lists
+ *
+ * Similar to MCVItem but for join statistics.
+ * Represents: one MCV entry from filter columns observed through a join
+ * Example: for join A.fk = B.id collecting stats on B.category, an item stores
+ * one category value and its frequency in table A.
+ * Example: values=['electronics'], frequency=0.20 means 20% of A's rows
+ * join to B rows where category='electronics'
+ *
+ * Note: Join column values are NOT stored (they're implicit in the join pattern).
+ * Only filter column values from the one of the tables are stored.
+ */
+typedef struct JoinMCVItem
+{
+	double		frequency;		/* frequency in join result (0.0 to 1.0) */
+	bool	   *isnull;			/* NULL flags for filter values */
+	Datum	   *values;			/* filter column values */
+}			JoinMCVItem;
+
+/* join MCV list - essentially an array of join MCV items */
+typedef struct JoinMCVList
+{
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of join MCV (BASIC) */
+	uint32		nitems;			/* number of MCV items */
+	AttrNumber	ndimensions;	/* number of filter columns (length of
+								 * stxkeys) */
+
+	/* Column metadata for filter columns (cached for lookup performance) */
+	AttrNumber	filter_attnums[STATS_MAX_DIMENSIONS];	/* attribute numbers of
+														 * filter columns */
+	Oid			filter_types[STATS_MAX_DIMENSIONS]; /* types of filter columns */
+
+	/* Variable-length array of MCV items follows */
+	JoinMCVItem items[FLEXIBLE_ARRAY_MEMBER];
+}			JoinMCVList;
+
+/*
+ * JoinStatsMatch - Information about a detected join pattern
+ * Used internally to track what was matched in a join+filter pattern
+ */
+typedef struct JoinStatsMatch
+{
+	Oid			target_rel;		/* table OID of the estimation target */
+	AttrNumber	target_joinkey; /* target_rel's join column */
+	Oid			other_rel;		/* table OID of the filter source */
+	AttrNumber	other_joinkey;	/* other_rel's join column */
+	List	   *filter_attnums; /* list of AttrNumbers for filter columns in
+								 * other_rel */
+	List	   *filter_values;	/* list of Datum constant values being
+								 * filtered */
+	Oid			collation;		/* collation for comparisons */
+
+	/* Additional info to avoid duplicate work */
+	List	   *join_rinfos;	/* list of join clause RestrictInfos */
+	List	   *filter_rinfos;	/* list of filter clause RestrictInfos */
+}			JoinStatsMatch;
+
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid, bool inh);
 extern MVDependencies *statext_dependencies_load(Oid mvoid, bool inh);
 extern MCVList *statext_mcv_load(Oid mvoid, bool inh);
@@ -126,5 +189,26 @@ extern StatisticExtInfo *choose_best_statistics(List *stats, char requiredkind,
 												List **clause_exprs,
 												int nclauses);
 extern HeapTuple statext_expressions_load(Oid stxoid, bool inh, int idx);
+
+/* Join MCV statistics functions */
+extern JoinMCVList * statext_join_mcv_load(Oid relid,
+										   AttrNumber rel_joinkey_attnum,
+										   Oid other_relid,
+										   AttrNumber otherrel_joinkey_attnum,
+										   int2vector *filter_attnums);
+extern JoinStatsMatch * find_join_mcv_pattern(PlannerInfo *root,
+											  RelOptInfo *outer_rel,
+											  RelOptInfo *inner_rel,
+											  List *restrictlist);
+extern JoinStatsMatch * find_join_mcv_pattern_from_clauses(PlannerInfo *root,
+														   List *clauses);
+extern Selectivity join_mcv_clauselist_selectivity(JoinMCVList * mcvlist,
+												   List *filter_values,
+												   List *filter_attnums,
+												   Oid collation);
+extern Selectivity statext_join_mcv_clauselist_selectivity(PlannerInfo *root,
+														   List *clauses,
+														   int varRelid,
+														   Bitmapset **estimatedclauses);
 
 #endif							/* STATISTICS_H */
