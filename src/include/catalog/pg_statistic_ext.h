@@ -57,6 +57,12 @@ CATALOG(pg_statistic_ext,3381,StatisticExtRelationId)
 	pg_node_tree stxexprs;		/* A list of expression trees for stats
 								 * attributes that are not simple column
 								 * references. */
+
+	/* Fields for join statistics (NULL for single-table stats) */
+	Oid			stxotherrel BKI_LOOKUP_OPT(pg_class);	/* other table in join
+														 * (for join stats) */
+	int2vector	stxjoinkeys;	/* join column pairs: [target_joinkey,
+								 * other_joinkey] (for join stats) */
 #endif
 
 } FormData_pg_statistic_ext;
@@ -73,6 +79,7 @@ DECLARE_TOAST(pg_statistic_ext, 3439, 3440);
 DECLARE_UNIQUE_INDEX_PKEY(pg_statistic_ext_oid_index, 3380, StatisticExtOidIndexId, pg_statistic_ext, btree(oid oid_ops));
 DECLARE_UNIQUE_INDEX(pg_statistic_ext_name_index, 3997, StatisticExtNameIndexId, pg_statistic_ext, btree(stxname name_ops, stxnamespace oid_ops));
 DECLARE_INDEX(pg_statistic_ext_relid_index, 3379, StatisticExtRelidIndexId, pg_statistic_ext, btree(stxrelid oid_ops));
+DECLARE_INDEX(pg_statistic_ext_otherrel_index, 9876, StatisticExtOtherrelIndexId, pg_statistic_ext, btree(stxrelid oid_ops, stxotherrel oid_ops));
 
 MAKE_SYSCACHE(STATEXTOID, pg_statistic_ext_oid_index, 4);
 MAKE_SYSCACHE(STATEXTNAMENSP, pg_statistic_ext_name_index, 4);
@@ -85,6 +92,7 @@ DECLARE_ARRAY_FOREIGN_KEY((stxrelid, stxkeys), pg_attribute, (attrelid, attnum))
 #define STATS_EXT_DEPENDENCIES		'f'
 #define STATS_EXT_MCV				'm'
 #define STATS_EXT_EXPRESSIONS		'e'
+#define STATS_EXT_JOIN_MCV			'c'
 
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 

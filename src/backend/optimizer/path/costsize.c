@@ -108,6 +108,7 @@
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 #include "utils/tuplesort.h"
+#include "statistics/statistics.h"
 
 
 #define LOG2(x)  (log(x) / 0.693147180559945)
@@ -5692,6 +5693,10 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 		bool		ref_is_outer;
 		List	   *removedlist;
 		ListCell   *cell;
+		Selectivity join_mcv_sel = 0.0;
+		RelOptInfo *con_rel;
+		RelOptInfo *ref_rel;
+		JoinMCVOpportunity *join_opp;
 
 		/*
 		 * This FK is not relevant unless it connects a baserel on one side of
@@ -5821,6 +5826,10 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 		 * knowledge that each referencing row will match exactly one row in
 		 * the referenced table.
 		 *
+		 * ENHANCED: First check if extended join MCV statistics exist for
+		 * this FK. If so, use the more accurate MCV-based selectivity instead
+		 * of the FK heuristic (1.0 / ref_tuples).
+		 *
 		 * XXX that's not true in the presence of nulls in the referencing
 		 * column(s), so in principle we should derate the estimate for those.
 		 * However (1) if there are any strict restriction clauses for the
@@ -5839,6 +5848,36 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 		 * work, it is uncommon in practice to have an FK referencing a parent
 		 * table.  So, at least for now, disregard inheritance here.
 		 */
+		con_rel = find_base_rel(root, fkinfo->con_relid);
+		ref_rel = find_base_rel(root, fkinfo->ref_relid);
+
+		/* Try to detect join MCV opportunity */
+		join_opp = find_join_mcv_opportunity(root,
+											 ref_is_outer ? ref_rel : con_rel,
+											 ref_is_outer ? con_rel : ref_rel,
+											 *restrictlist);
+		if (join_opp)
+		{
+			JoinMCVList *join_mcv;
+
+			join_mcv = statext_join_mcv_load(join_opp->target_rel,
+											 join_opp->target_joinkey,
+											 join_opp->other_rel,
+											 join_opp->other_joinkey,
+											 join_opp->filter_attnums);
+			if (join_mcv)
+			{
+				join_mcv_sel = join_mcv_clauselist_selectivity(join_mcv,
+															   join_opp->filter_values,
+															   join_opp->filter_attnums,
+															   join_opp->collation);
+				pfree(join_mcv);
+
+				ereport(DEBUG1,
+						(errmsg("  FK: extended join MCV found, selectivity = %.6f", join_mcv_sel)));
+			}
+		}
+
 		if (jointype == JOIN_SEMI || jointype == JOIN_ANTI)
 		{
 			/*
@@ -5852,10 +5891,25 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 			 * restriction clauses, which is rows / tuples; but we must guard
 			 * against tuples == 0.
 			 */
-			RelOptInfo *ref_rel = find_base_rel(root, fkinfo->ref_relid);
 			double		ref_tuples = Max(ref_rel->tuples, 1.0);
 
 			fkselec *= ref_rel->rows / ref_tuples;
+		}
+		else if (join_mcv_sel > 0)
+		{
+			/*
+			 * Apply extended join MCV selectivity.
+			 *
+			 * For IN clauses: join_mcv_sel = average selectivity per filter
+			 * constant For equality:   join_mcv_sel = selectivity for that
+			 * single constant Using the average ensures multiplying by
+			 * inner_rows recovers the correct total selectivity.
+			 */
+			fkselec *= join_mcv_sel;
+
+			ereport(DEBUG1,
+					(errmsg("  FK APPLIED (MCV): selectivity = %.6f, cumulative fkselec = %.6f",
+							join_mcv_sel, fkselec)));
 		}
 		else
 		{
@@ -5864,7 +5918,6 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 			 * guard against tuples == 0.  Note we should use the raw table
 			 * tuple count, not any estimate of its filtered or joined size.
 			 */
-			RelOptInfo *ref_rel = find_base_rel(root, fkinfo->ref_relid);
 			double		ref_tuples = Max(ref_rel->tuples, 1.0);
 
 			fkselec *= 1.0 / ref_tuples;

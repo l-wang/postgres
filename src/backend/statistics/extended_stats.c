@@ -70,15 +70,18 @@ typedef struct StatExtEntry
 	List	   *types;			/* 'char' list of enabled statistics kinds */
 	int			stattarget;		/* statistics target (-1 for default) */
 	List	   *exprs;			/* expressions */
+
+	/* join statistics fields (NULL/invalid for single-table stats) */
+	Oid			otherrel;		/* other table's OID (for join stats) */
+	int2vector *joinkeys;		/* join keys [target_joinkey, other_joinkey] */
 } StatExtEntry;
 
 
 static List *fetch_statentries_for_relation(Relation pg_statext, Oid relid);
 static VacAttrStats **lookup_var_attr_stats(Bitmapset *attrs, List *exprs,
 											int nvacatts, VacAttrStats **vacatts);
-static void statext_store(Oid statOid, bool inh,
-						  MVNDistinct *ndistinct, MVDependencies *dependencies,
-						  MCVList *mcv, Datum exprs, VacAttrStats **stats);
+static void statext_store(Oid statOid, bool inh, MVNDistinct *ndistinct, MVDependencies *dependencies, MCVList *mcv, Datum exprs,
+						  VacAttrStats **stats, JoinMCVList * join_mcv);
 static int	statext_compute_stattarget(int stattarget,
 									   int nattrs, VacAttrStats **stats);
 
@@ -98,6 +101,33 @@ static AnlExprData *build_expr_data(List *exprs, int stattarget);
 static StatsBuildData *make_build_data(Relation rel, StatExtEntry *stat,
 									   int numrows, HeapTuple *rows,
 									   VacAttrStats **stats, int stattarget);
+
+/*
+ * bms_to_int2vector
+ *		Convert a Bitmapset to an int2vector.
+ *
+ * Returns NULL if the Bitmapset is empty or NULL.
+ * The result is palloc'd in the current memory context.
+ */
+static int2vector *
+bms_to_int2vector(Bitmapset *bms)
+{
+	int			nmembers;
+	int16	   *attnums;
+	int			i = 0;
+	int			k = -1;
+
+	if (bms_is_empty(bms))
+		return NULL;
+
+	nmembers = bms_num_members(bms);
+	attnums = palloc(nmembers * sizeof(int16));
+
+	while ((k = bms_next_member(bms, k)) >= 0)
+		attnums[i++] = (int16) k;
+
+	return buildint2vector(attnums, nmembers);
+}
 
 
 /*
@@ -155,6 +185,7 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
 		MCVList    *mcv = NULL;
+		JoinMCVList *join_mcv = NULL;
 		Datum		exprstats = (Datum) 0;
 		VacAttrStats **stats;
 		ListCell   *lc2;
@@ -164,10 +195,14 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 		/*
 		 * Check if we can build these stats based on the column analyzed. If
 		 * not, report this fact (except in autovacuum) and move on.
+		 *
+		 * Note: join mcv stats don't have columns in the primary table, so
+		 * lookup_var_attr_stats will return NULL. We handle this below.
 		 */
 		stats = lookup_var_attr_stats(stat->columns, stat->exprs,
 									  natts, vacattrstats);
-		if (!stats)
+		if (!stats && !(list_length(stat->types) == 1 &&
+						linitial_int(stat->types) == STATS_EXT_JOIN_MCV))
 		{
 			if (!AmAutoVacuumWorkerProcess())
 				ereport(WARNING,
@@ -180,21 +215,34 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 			continue;
 		}
 
-		/* compute statistics target for this statistics object */
-		stattarget = statext_compute_stattarget(stat->stattarget,
-												bms_num_members(stat->columns),
-												stats);
-
 		/*
-		 * Don't rebuild statistics objects with statistics target set to 0
-		 * (we just leave the existing values around, just like we do for
-		 * regular per-column statistics).
+		 * Join-mcv stats reuse MCVs already computed for the join column, so
+		 * no separate stattarget or StatsBuildData is needed.
 		 */
-		if (stattarget == 0)
-			continue;
+		if (list_length(stat->types) == 1 &&
+			linitial_int(stat->types) == STATS_EXT_JOIN_MCV)
+		{
+			stattarget = -1;
+			data = NULL;
+		}
+		else
+		{
+			/* compute statistics target for this statistics object */
+			stattarget = statext_compute_stattarget(stat->stattarget,
+													bms_num_members(stat->columns),
+													stats);
 
-		/* evaluate expressions (if the statistics object has any) */
-		data = make_build_data(onerel, stat, numrows, rows, stats, stattarget);
+			/*
+			 * Don't rebuild statistics objects with statistics target set to
+			 * 0 (we just leave the existing values around, just like we do
+			 * for regular per-column statistics).
+			 */
+			if (stattarget == 0)
+				continue;
+
+			/* evaluate expressions (if the statistics object has any) */
+			data = make_build_data(onerel, stat, numrows, rows, stats, stattarget);
+		}
 
 		/* compute statistic of each requested type */
 		foreach(lc2, stat->types)
@@ -223,11 +271,46 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 
 				exprstats = serialize_expr_stats(exprdata, nexprs);
 			}
+			else if (t == STATS_EXT_JOIN_MCV)
+			{
+				int2vector *filter_attnums;
+
+				if (!OidIsValid(stat->otherrel))
+				{
+					elog(WARNING, "skipping join mcv stat \"%s.%s\": missing otherrel",
+						 stat->schema, stat->name);
+					continue;
+				}
+
+				if (!stat->joinkeys || stat->joinkeys->dim1 != 2)
+				{
+					elog(WARNING, "skipping join mcv stat \"%s.%s\": invalid joinkeys",
+						 stat->schema, stat->name);
+					continue;
+				}
+
+				/* Convert columns Bitmapset to int2vector for filter attnums */
+				filter_attnums = bms_to_int2vector(stat->columns);
+
+				join_mcv = statext_join_mcv_build(stat->statOid,
+												  RelationGetRelid(onerel),
+												  stat->otherrel,
+												  stat->joinkeys,
+												  filter_attnums,
+												  numrows,
+												  rows,
+												  natts,
+												  vacattrstats);
+
+				if (filter_attnums)
+					pfree(filter_attnums);
+			}
 		}
 
 		/* store the statistics in the catalog */
 		statext_store(stat->statOid, inh,
-					  ndistinct, dependencies, mcv, exprstats, stats);
+					  ndistinct, dependencies, mcv, exprstats,
+					  stats, join_mcv);
 
 		/* for reporting progress */
 		pgstat_progress_update_param(PROGRESS_ANALYZE_EXT_STATS_COMPUTED,
@@ -405,6 +488,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 			attnum = Anum_pg_statistic_ext_data_stxdexpr;
 			break;
 
+		case STATS_EXT_JOIN_MCV:
+			attnum = Anum_pg_statistic_ext_data_stxdjoinmcv;
+			break;
+
 		default:
 			elog(ERROR, "unexpected statistics type requested: %d", type);
 	}
@@ -474,7 +561,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
 				   (enabled[i] == STATS_EXT_MCV) ||
-				   (enabled[i] == STATS_EXT_EXPRESSIONS));
+				   (enabled[i] == STATS_EXT_EXPRESSIONS) ||
+				   (enabled[i] == STATS_EXT_JOIN_MCV));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 
@@ -506,6 +594,27 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		}
 
 		entry->exprs = exprs;
+
+		/*
+		 * Fetch join statistics fields (stxotherrel, stxjoinkeys). These are
+		 * NULL/invalid for single-table statistics.
+		 */
+		datum = SysCacheGetAttr(STATEXTOID, htup,
+								Anum_pg_statistic_ext_stxotherrel, &isnull);
+		entry->otherrel = isnull ? InvalidOid : DatumGetObjectId(datum);
+
+		datum = SysCacheGetAttr(STATEXTOID, htup,
+								Anum_pg_statistic_ext_stxjoinkeys, &isnull);
+		if (!isnull)
+		{
+			/* Copy the int2vector so it survives catalog cache invalidation */
+			int2vector *orig = (int2vector *) DatumGetPointer(datum);
+
+			entry->joinkeys = (int2vector *) palloc(VARSIZE(orig));
+			memcpy(entry->joinkeys, orig, VARSIZE(orig));
+		}
+		else
+			entry->joinkeys = NULL;
 
 		result = lappend(result, entry);
 	}
@@ -756,9 +865,8 @@ lookup_var_attr_stats(Bitmapset *attrs, List *exprs,
  *	tuple.
  */
 static void
-statext_store(Oid statOid, bool inh,
-			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList *mcv, Datum exprs, VacAttrStats **stats)
+statext_store(Oid statOid, bool inh, MVNDistinct *ndistinct, MVDependencies *dependencies, MCVList *mcv, Datum exprs,
+			  VacAttrStats **stats, JoinMCVList * join_mcv)
 {
 	Relation	pg_stextdata;
 	HeapTuple	stup;
@@ -807,6 +915,13 @@ statext_store(Oid statOid, bool inh,
 	{
 		nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = false;
 		values[Anum_pg_statistic_ext_data_stxdexpr - 1] = exprs;
+	}
+	if (join_mcv != NULL)
+	{
+		bytea	   *data = statext_join_mcv_serialize(join_mcv);
+
+		nulls[Anum_pg_statistic_ext_data_stxdjoinmcv - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_data_stxdjoinmcv - 1] = PointerGetDatum(data);
 	}
 
 	/*
@@ -1971,6 +2086,87 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 	}
 
 	return sel;
+}
+
+/*
+ * statext_join_mcv_clauselist_selectivity
+ *		Estimate selectivity using extended statistics for joins.
+ *
+ * This function handles cases where clauses involve exactly two base relations:
+ * - Regular joins (varRelid == 0)
+ * - Parameterized paths (varRelid != 0, but clauses reference 2 relations)
+ *
+ * Returns selectivity if join stats were successfully applied, or 1.0 otherwise.
+ * 'estimatedclauses' is populated with the 0-based list position indexes of
+ * clauses whose selectivity was estimated here. The caller should skip these
+ * clauses to avoid double-counting.
+ */
+Selectivity
+statext_join_mcv_clauselist_selectivity(PlannerInfo *root,
+										List *clauses,
+										int varRelid,
+										Bitmapset **estimatedclauses)
+{
+	JoinMCVOpportunity *join_opp;
+
+	/* Try to detect join MCV opportunity from clauses */
+	join_opp = find_join_mcv_opportunity_in_clauses(root, clauses);
+
+	if (join_opp)
+	{
+		JoinMCVList *join_mcv;
+		Selectivity selec = 0.0;
+
+		join_mcv = statext_join_mcv_load(join_opp->target_rel,
+										 join_opp->target_joinkey,
+										 join_opp->other_rel,
+										 join_opp->other_joinkey,
+										 join_opp->filter_attnums);
+		if (join_mcv)
+		{
+			selec = join_mcv_clauselist_selectivity(join_mcv,
+													join_opp->filter_values,
+													join_opp->filter_attnums,
+													join_opp->collation);
+			pfree(join_mcv);
+		}
+
+		if (selec > 0 && selec < 1.0)
+		{
+			int			clause_idx;
+			ListCell   *lc;
+
+			/*
+			 * Mark the join and filter clauses as estimated so they won't be
+			 * double-counted in the per-clause loop.
+			 */
+			clause_idx = -1;
+			foreach(lc, clauses)
+			{
+				RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+
+				clause_idx++;
+
+				/* Mark join clauses */
+				if (list_member_ptr(join_opp->join_rinfos, rinfo))
+				{
+					*estimatedclauses = bms_add_member(*estimatedclauses, clause_idx);
+					continue;
+				}
+
+				/* Mark filter clauses */
+				if (list_member_ptr(join_opp->filter_rinfos, rinfo))
+				{
+					*estimatedclauses = bms_add_member(*estimatedclauses, clause_idx);
+				}
+			}
+
+			return selec;
+		}
+	}
+
+	/* No join stats applicable */
+	return 1.0;
 }
 
 /*

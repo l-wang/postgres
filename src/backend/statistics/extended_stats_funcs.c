@@ -370,6 +370,7 @@ extended_statistics_update(FunctionCallInfo fcinfo)
 	nulls[Anum_pg_statistic_ext_data_stxddependencies - 1] = true;
 	nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = true;
 	nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = true;
+	nulls[Anum_pg_statistic_ext_data_stxdjoinmcv - 1] = true;
 
 	/*
 	 * For each stats kind, deserialize the data at hand and perform a round

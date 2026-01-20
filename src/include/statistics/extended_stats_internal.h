@@ -68,7 +68,6 @@ typedef struct StatsBuildData
 	bool	  **nulls;
 } StatsBuildData;
 
-
 extern MVNDistinct *statext_ndistinct_build(double totalrows, StatsBuildData *data);
 extern bytea *statext_ndistinct_serialize(MVNDistinct *ndistinct);
 extern MVNDistinct *statext_ndistinct_deserialize(bytea *data);
@@ -90,6 +89,18 @@ extern MCVList *statext_mcv_build(StatsBuildData *data,
 extern bytea *statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats);
 extern MCVList *statext_mcv_deserialize(bytea *data);
 extern void statext_mcv_free(MCVList *mcvlist);
+
+extern JoinMCVList * statext_join_mcv_build(Oid stxoid,
+											Oid primary_relid,
+											Oid orther_relid,
+											int2vector *joinkeys,
+											int2vector *filter_attnums,
+											int numrows,
+											HeapTuple *rows,
+											int natts,
+											VacAttrStats **vacattrstats);
+extern bytea *statext_join_mcv_serialize(JoinMCVList * mcvlist);
+extern JoinMCVList * statext_join_mcv_deserialize(bytea *data);
 
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
