@@ -283,6 +283,255 @@ CREATE STATISTICS bad_stats5 (mcv) ON lower(k.keyword) FROM movie_keywords2 mk J
 ERROR:  expressions are not supported in join statistics
 CREATE STATISTICS bad_stats6 (mcv) ON k.keyword FROM (movie_keywords2 mk JOIN keywords2 k ON (mk.keyword_id = k.id)) JOIN keywords2 k2 ON (k.id = k2.id);
 ERROR:  extended join statistics currently support only simple two-table joins
+--
+-- Test automatic collection of join MCV statistics for FK joins
+-- with functional dependencies.
+--
+CREATE TABLE keywords (
+    id INTEGER PRIMARY KEY,
+    keyword TEXT NOT NULL,
+    phonetic_code character varying(5)
+);
+CREATE TABLE movie_keywords (
+    movie_id INTEGER PRIMARY KEY,
+    keyword_id INTEGER NOT NULL REFERENCES keywords(id)
+);
+-- Insert tightly correlated data into the "referenced" table
+INSERT INTO keywords (id, keyword, phonetic_code)
+SELECT
+    i,
+    'keyword_' || i,
+    'ph_' || i
+FROM generate_series(1, 50) i;
+-- Insert data into the referencing table with skewed distribution
+INSERT INTO movie_keywords (movie_id, keyword_id)
+SELECT
+    i,
+    CASE
+        WHEN i % 100 < 60 THEN (i % 10) + 1      -- 60% keyword_ids 1-10 (6% frequency per keyword)
+        WHEN i % 100 < 90 THEN (i % 10) + 11     -- 30% keyword_ids 11-20 (3% frequency per keyword)
+        ELSE (i % 10) + 21                       -- 10% keyword_ids 21-30 (1% frequency per keyword)
+        END
+FROM generate_series(1, 10000) i;
+-- Create functional dependency statistics on the referenced table
+CREATE STATISTICS keywords_deps_stat (dependencies) ON id, keyword, phonetic_code FROM keywords;
+ANALYZE keywords;
+-- Analyze the referencing table to trigger join MCV collection
+ANALYZE movie_keywords;
+-- Show the join statistics
+SELECT s.stxrelid::regclass,
+       s.stxotherrel::regclass,
+       s.stxjoinkeys,
+       s.stxkeys,
+       s.stxkind,
+       s.stxstattarget,
+       s.stxexprs
+FROM pg_statistic_ext s
+WHERE s.stxrelid = 'movie_keywords'::regclass
+ORDER BY s.oid;
+    stxrelid    | stxotherrel | stxjoinkeys | stxkeys | stxkind | stxstattarget | stxexprs 
+----------------+-------------+-------------+---------+---------+---------------+----------
+ movie_keywords | keywords    | 2 1         | 2       | {c}     |               | 
+ movie_keywords | keywords    | 2 1         | 3       | {c}     |               | 
+(2 rows)
+
+-- Note: the MCV list items only store the filter values (join values are implicit)
+SELECT m.index,
+       m.values,
+       m.nulls,
+       ROUND(m.frequency::numeric, 2) AS frequency
+FROM pg_statistic_ext s
+         JOIN pg_statistic_ext_data d ON (s.oid = d.stxoid)
+         CROSS JOIN LATERAL pg_join_mcv_list_items(d.stxdjoinmcv) AS m
+WHERE s.stxrelid = 'movie_keywords'::regclass
+  AND 'c' = ANY(s.stxkind)
+ORDER BY s.stxname, m.index;
+ index |    values    | nulls | frequency 
+-------+--------------+-------+-----------
+     0 | {keyword_1}  | {f}   |      0.06
+     1 | {keyword_2}  | {f}   |      0.06
+     2 | {keyword_3}  | {f}   |      0.06
+     3 | {keyword_4}  | {f}   |      0.06
+     4 | {keyword_5}  | {f}   |      0.06
+     5 | {keyword_6}  | {f}   |      0.06
+     6 | {keyword_7}  | {f}   |      0.06
+     7 | {keyword_8}  | {f}   |      0.06
+     8 | {keyword_9}  | {f}   |      0.06
+     9 | {keyword_10} | {f}   |      0.06
+    10 | {keyword_11} | {f}   |      0.03
+    11 | {keyword_12} | {f}   |      0.03
+    12 | {keyword_13} | {f}   |      0.03
+    13 | {keyword_14} | {f}   |      0.03
+    14 | {keyword_15} | {f}   |      0.03
+    15 | {keyword_16} | {f}   |      0.03
+    16 | {keyword_17} | {f}   |      0.03
+    17 | {keyword_18} | {f}   |      0.03
+    18 | {keyword_19} | {f}   |      0.03
+    19 | {keyword_20} | {f}   |      0.03
+    20 | {keyword_21} | {f}   |      0.01
+    21 | {keyword_22} | {f}   |      0.01
+    22 | {keyword_23} | {f}   |      0.01
+    23 | {keyword_24} | {f}   |      0.01
+    24 | {keyword_25} | {f}   |      0.01
+    25 | {keyword_26} | {f}   |      0.01
+    26 | {keyword_27} | {f}   |      0.01
+    27 | {keyword_28} | {f}   |      0.01
+    28 | {keyword_29} | {f}   |      0.01
+    29 | {keyword_30} | {f}   |      0.01
+     0 | {ph_1}       | {f}   |      0.06
+     1 | {ph_2}       | {f}   |      0.06
+     2 | {ph_3}       | {f}   |      0.06
+     3 | {ph_4}       | {f}   |      0.06
+     4 | {ph_5}       | {f}   |      0.06
+     5 | {ph_6}       | {f}   |      0.06
+     6 | {ph_7}       | {f}   |      0.06
+     7 | {ph_8}       | {f}   |      0.06
+     8 | {ph_9}       | {f}   |      0.06
+     9 | {ph_10}      | {f}   |      0.06
+    10 | {ph_11}      | {f}   |      0.03
+    11 | {ph_12}      | {f}   |      0.03
+    12 | {ph_13}      | {f}   |      0.03
+    13 | {ph_14}      | {f}   |      0.03
+    14 | {ph_15}      | {f}   |      0.03
+    15 | {ph_16}      | {f}   |      0.03
+    16 | {ph_17}      | {f}   |      0.03
+    17 | {ph_18}      | {f}   |      0.03
+    18 | {ph_19}      | {f}   |      0.03
+    19 | {ph_20}      | {f}   |      0.03
+    20 | {ph_21}      | {f}   |      0.01
+    21 | {ph_22}      | {f}   |      0.01
+    22 | {ph_23}      | {f}   |      0.01
+    23 | {ph_24}      | {f}   |      0.01
+    24 | {ph_25}      | {f}   |      0.01
+    25 | {ph_26}      | {f}   |      0.01
+    26 | {ph_27}      | {f}   |      0.01
+    27 | {ph_28}      | {f}   |      0.01
+    28 | {ph_29}      | {f}   |      0.01
+    29 | {ph_30}      | {f}   |      0.01
+(60 rows)
+
+-- Ensure the join MCV statistics are used for single equality predicates
+-- on the filter column of the referenced table
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.keyword = ''keyword_1'' AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       600 |    600
+(1 row)
+
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.keyword = ''keyword_15'' AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       300 |    300
+(1 row)
+
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.keyword = ''keyword_25'' AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       100 |    100
+(1 row)
+
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.phonetic_code = ''ph_1'' AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       600 |    600
+(1 row)
+
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.phonetic_code = ''ph_15'' AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       300 |    300
+(1 row)
+
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.phonetic_code = ''ph_25'' AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       100 |    100
+(1 row)
+
+-- No filter on referenced table, should not use join stats
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+     10000 |  10000
+(1 row)
+
+-- OR Predicates (currently NOT supported by join MCV stats)
+-- Expected: Will likely underestimate
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE (k.keyword = ''keyword_1'' OR k.keyword = ''keyword_2'')
+      AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       400 |   1200
+(1 row)
+
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE (k.keyword = ''keyword_1'' OR k.keyword = ''keyword_15'')
+      AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       400 |    900
+(1 row)
+
+-- Ensure the join MCV statistics are used for IN predicates
+-- on the filter column of the referenced table
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.keyword IN (''keyword_1'', ''keyword_2'', ''keyword_3'')
+      AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+      1800 |   1800
+(1 row)
+
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.keyword IN (''keyword_1'', ''keyword_15'', ''keyword_25'')
+      AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+      1000 |   1000
+(1 row)
+
+SELECT * FROM check_estimated_rows('
+    SELECT * FROM movie_keywords mk, keywords k
+    WHERE k.phonetic_code IN (''ph_1'', ''ph_15'')
+      AND k.id = mk.keyword_id
+');
+ estimated | actual 
+-----------+--------
+       900 |    900
+(1 row)
+
 -- Cleanup
 DROP TABLE movie_keywords2 CASCADE;
 DROP TABLE keywords2 CASCADE;
+DROP TABLE movie_keywords CASCADE;
+DROP TABLE keywords CASCADE;

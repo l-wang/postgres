@@ -68,6 +68,17 @@ typedef struct StatsBuildData
 	bool	  **nulls;
 } StatsBuildData;
 
+/* candidate for implicit foreign key join MCV statistics collection */
+typedef struct FKJoinStatsCandidate
+{
+	Oid			referencing_rel;
+	AttrNumber	referencing_attr;	/* FK column in referencing table */
+	Oid			referenced_rel;
+	AttrNumber	referenced_attr;	/* PK column in referenced table */
+	AttrNumber	filter_attr;	/* filter column in referenced table
+								 * (dependent on referenced_attr) */
+}			FKJoinStatsCandidate;
+
 extern MVNDistinct *statext_ndistinct_build(double totalrows, StatsBuildData *data);
 extern bytea *statext_ndistinct_serialize(MVNDistinct *ndistinct);
 extern MVNDistinct *statext_ndistinct_deserialize(bytea *data);
