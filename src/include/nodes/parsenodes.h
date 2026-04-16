@@ -3635,6 +3635,11 @@ typedef struct CreateStatsStmt
 	char	   *stxcomment;		/* comment to apply to stats, or NULL */
 	bool		transformed;	/* true when transformStatsStmt is finished */
 	bool		if_not_exists;	/* do nothing if stats name already exists */
+
+	/* Join statistics fields, populated by transformStatsStmt */
+	Oid			stxrelid;		/* anchor table OID (InvalidOid if not join) */
+	List	   *stxjoinrels;	/* other table OIDs (list of Oid) */
+	List	   *stxjoinconds;	/* equijoin conditions (list of OpExpr) */
 } CreateStatsStmt;
 
 /*

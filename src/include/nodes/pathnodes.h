@@ -1530,6 +1530,12 @@ typedef struct StatisticExtInfo
 
 	/* expressions */
 	List	   *exprs;
+
+	/* Join statistics fields (all NIL for single-table stats) */
+	List	   *joinrels;		/* OIDs of other participating relations */
+	List	   *keyattrs;		/* raw stxkeys as list of AttrNumbers */
+	List	   *keyrefs;		/* per-key table ref (1=anchor, 2+=joined) */
+	List	   *joinconds;		/* parsed join conditions (List of OpExpr) */
 } StatisticExtInfo;
 
 /*

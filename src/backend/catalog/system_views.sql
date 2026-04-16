@@ -285,10 +285,17 @@ CREATE VIEW pg_stats_ext WITH (security_barrier) AS
            s.stxname AS statistics_name,
            s.oid AS statistics_id,
            pg_get_userbyid(s.stxowner) AS statistics_owner,
-           ( SELECT array_agg(a.attname ORDER BY a.attnum)
-             FROM unnest(s.stxkeys) k
-                  JOIN pg_attribute a
-                       ON (a.attrelid = s.stxrelid AND a.attnum = k)
+           ( SELECT array_agg(a.attname ORDER BY k.ord)
+             FROM unnest(s.stxkeys) WITH ORDINALITY AS k(attnum, ord)
+                  LEFT JOIN unnest(s.stxkeyrefs) WITH ORDINALITY
+                       AS r(keyref, ord2) ON (k.ord = r.ord2)
+                  JOIN pg_attribute a ON (
+                       a.attrelid = CASE
+                           WHEN r.keyref IS NULL OR r.keyref = 1
+                               THEN s.stxrelid
+                           ELSE s.stxjoinrels[r.keyref - 2]
+                       END
+                       AND a.attnum = k.attnum)
            ) AS attnames,
            pg_get_statisticsobjdef_expressions(s.oid) as exprs,
            s.stxkind AS kinds,
@@ -311,6 +318,11 @@ CREATE VIEW pg_stats_ext WITH (security_barrier) AS
                      FROM pg_mcv_list_items(sd.stxdmcv)
                    ) m ON sd.stxdmcv IS NOT NULL
     WHERE pg_has_role(c.relowner, 'USAGE')
+    AND (s.stxjoinrels IS NULL OR NOT EXISTS (
+            SELECT 1 FROM unnest(s.stxjoinrels) AS jr(oid)
+            JOIN pg_class jc ON jc.oid = jr.oid
+            WHERE NOT pg_has_role(jc.relowner, 'USAGE')
+        ))
     AND (c.relrowsecurity = false OR NOT row_security_active(c.oid));
 
 CREATE VIEW pg_stats_ext_exprs WITH (security_barrier) AS

@@ -1654,7 +1654,9 @@ get_relation_constraints(PlannerInfo *root,
 static void
 get_relation_statistics_worker(List **stainfos, RelOptInfo *rel,
 							   Oid statOid, bool inh,
-							   Bitmapset *keys, List *exprs)
+							   Bitmapset *keys, List *exprs,
+							   List *joinrels, List *keyattrs,
+							   List *keyrefs, List *joinconds)
 {
 	Form_pg_statistic_ext_data dataForm;
 	HeapTuple	dtup;
@@ -1705,6 +1707,10 @@ get_relation_statistics_worker(List **stainfos, RelOptInfo *rel,
 		info->kind = STATS_EXT_MCV;
 		info->keys = bms_copy(keys);
 		info->exprs = exprs;
+		info->joinrels = joinrels;
+		info->keyattrs = keyattrs;
+		info->keyrefs = keyrefs;
+		info->joinconds = joinconds;
 
 		*stainfos = lappend(*stainfos, info);
 	}
@@ -1753,6 +1759,12 @@ get_relation_statistics(PlannerInfo *root, RelOptInfo *rel,
 		Bitmapset  *keys = NULL;
 		List	   *exprs = NIL;
 		int			i;
+
+		/* Join statistics fields */
+		List	   *joinrels_list = NIL;
+		List	   *keyattrs_list = NIL;
+		List	   *keyrefs_list = NIL;
+		List	   *joinconds = NIL;
 
 		htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
 		if (!HeapTupleIsValid(htup))
@@ -1822,11 +1834,60 @@ get_relation_statistics(PlannerInfo *root, RelOptInfo *rel,
 			}
 		}
 
+		/*
+		 * Get join statistics fields if present.  Join stats have a non-null
+		 * stxjoinrels array listing the other participating relations.
+		 */
+		{
+			bool		isnull;
+			Datum		datum;
+
+			datum = SysCacheGetAttr(STATEXTOID, htup,
+									Anum_pg_statistic_ext_stxjoinrels, &isnull);
+			if (!isnull)
+			{
+				oidvector  *jrels = (oidvector *) DatumGetPointer(datum);
+				int2vector *keyrefs_vec;
+				int			nstxkeys;
+				char	   *condstr;
+
+				for (i = 0; i < jrels->dim1; i++)
+					joinrels_list = lappend_oid(joinrels_list,
+												jrels->values[i]);
+
+				/* stxkeys and stxkeyrefs */
+				nstxkeys = staForm->stxkeys.dim1;
+				datum = SysCacheGetAttrNotNull(STATEXTOID, htup,
+											   Anum_pg_statistic_ext_stxkeyrefs);
+				keyrefs_vec = (int2vector *) DatumGetPointer(datum);
+				for (i = 0; i < nstxkeys; i++)
+				{
+					keyattrs_list = lappend_int(keyattrs_list,
+												staForm->stxkeys.values[i]);
+					keyrefs_list = lappend_int(keyrefs_list,
+											   keyrefs_vec->values[i]);
+				}
+
+				/* stxjoinconds */
+				datum = SysCacheGetAttrNotNull(STATEXTOID, htup,
+											   Anum_pg_statistic_ext_stxjoinconds);
+				condstr = TextDatumGetCString(datum);
+				joinconds = (List *) stringToNode(condstr);
+				pfree(condstr);
+			}
+		}
+
 		/* extract statistics for possible values of stxdinherit flag */
 
-		get_relation_statistics_worker(&stainfos, rel, statOid, true, keys, exprs);
+		get_relation_statistics_worker(&stainfos, rel, statOid, true,
+									   keys, exprs,
+									   joinrels_list, keyattrs_list,
+									   keyrefs_list, joinconds);
 
-		get_relation_statistics_worker(&stainfos, rel, statOid, false, keys, exprs);
+		get_relation_statistics_worker(&stainfos, rel, statOid, false,
+									   keys, exprs,
+									   joinrels_list, keyattrs_list,
+									   keyrefs_list, joinconds);
 
 		ReleaseSysCache(htup);
 		bms_free(keys);
